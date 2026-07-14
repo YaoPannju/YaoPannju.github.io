@@ -20,13 +20,22 @@
 <meta name="twitter:title" content="404 Page not found">
 <meta name="twitter:description" content="Hello World">
 <style>
-    #live2d-widget {
+    #waifu {
+        left: auto !important;
+        right: 10px !important;
+    }
+    #waifu-toggle {
         left: auto !important;
         right: 0 !important;
+        margin-left: 0 !important;
+        margin-right: -100px;
+        justify-content: flex-start !important;
     }
-    #live2d-toggle {
-        left: auto !important;
-        right: 20px !important;
+    #waifu-toggle.waifu-toggle-active {
+        margin-right: -50px;
+    }
+    #waifu-toggle.waifu-toggle-active:hover {
+        margin-right: -30px;
     }
 </style>
 <script src="https://fastly.jsdelivr.net/npm/live2d-widgets@1.0.1/dist/autoload.js"></script>
