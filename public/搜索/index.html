@@ -62,61 +62,75 @@
     }
 
      
-     
-    .article-list article {
-        background-color: rgba(18, 6, 16, 0.42) !important;
-        backdrop-filter: blur(7px);
-        -webkit-backdrop-filter: blur(7px);
-        border: 1px solid rgba(255, 200, 225, 0.18) !important;
+    :root {
+        --card-background: rgba(18, 6, 16, 0.42) !important;
+        --card-text-color-main: rgba(255, 255, 255, 0.9) !important;
+        --card-text-color-secondary: rgba(255, 255, 255, 0.7) !important;
+        --card-text-color-tertiary: rgba(255, 255, 255, 0.55) !important;
+        --card-separator-color: rgba(255, 200, 225, 0.15) !important;
     }
+
      
     .article-list article,
-    .article-list article .article-title a,
-    .article-list article .article-details,
-    .article-list article .article-category a,
-    .article-list article .article-time,
-    .article-list article .article-tags a {
+    .article-list--compact,
+    .article-list--tile article,
+    .pagination,
+    .section-card .section-term,
+    .search-form,
+    .widget--toc,
+    .article-toc,
+    .widget.archives .widget-archive--list,
+    .tag-cloud .tagCloud-tags a,
+    .article-content .table-wrapper {
+        backdrop-filter: blur(7px) !important;
+        -webkit-backdrop-filter: blur(7px) !important;
+        border: 1px solid rgba(255, 200, 225, 0.18) !important;
+    }
+
+     
+    .article-list article,
+    .article-list article a,
+    .article-list article span,
+    .article-list article time,
+    .article-details,
+    .article-details a,
+    .article-category a,
+    .article-tags a,
+    .article-subtitle,
+    .article-time,
+    .section-card,
+    .section-card a,
+    .section-card span,
+    .pagination .page-link,
+    .search-form,
+    .search-form label,
+    .widget--toc,
+    .widget--toc a,
+    .article-toc,
+    .article-toc a,
+    .widget.archives,
+    .widget.archives a,
+    .widget.archives span,
+    .tag-cloud a,
+    .tag-cloud span {
         color: rgba(255, 255, 255, 0.9) !important;
     }
      
+    .article-subtitle,
     .article-list article .article-subtitle,
-    .article-list article .article-category a:hover {
-        color: rgba(255, 255, 255, 0.7) !important;
+    .widget.archives .archives-year a span.count,
+    .tag-cloud .tagCloud-tags a:hover {
+        color: rgba(255, 255, 255, 0.65) !important;
     }
 
      
-    .pagination {
-        background-color: rgba(18, 6, 16, 0.42) !important;
-        backdrop-filter: blur(7px);
-        -webkit-backdrop-filter: blur(7px);
-        border: 1px solid rgba(255, 200, 225, 0.18) !important;
-    }
-    .pagination .page-link {
-        color: rgba(255, 255, 255, 0.9) !important;
-    }
-
-     
-    .right-sidebar .widget.archives .widget-archive--list,
-    .right-sidebar .widget--toc,
-    .right-sidebar .search-form.widget,
-    .right-sidebar .widget.categories,
-    .right-sidebar .widget.tag-cloud {
-        background-color: rgba(18, 6, 16, 0.42) !important;
-        backdrop-filter: blur(7px);
-        -webkit-backdrop-filter: blur(7px);
-        border: 1px solid rgba(255, 200, 225, 0.18) !important;
-    }
-     
-    .right-sidebar .widget,
-    .right-sidebar .widget a,
-    .right-sidebar .widget span,
-    .right-sidebar .widget label {
-        color: rgba(255, 255, 255, 0.9) !important;
-    }
-    .right-sidebar .widget input {
+    .search-form input {
         background-color: rgba(255, 255, 255, 0.12) !important;
         color: rgba(255, 255, 255, 0.9) !important;
         border-color: rgba(255, 200, 225, 0.25) !important;
+    }
+    .search-form input::placeholder {
+        color: rgba(255, 255, 255, 0.5) !important;
     }
 </style>
 <script src="https://fastly.jsdelivr.net/npm/live2d-widgets@1.0.1/dist/autoload.js"></script>
@@ -126,9 +140,7 @@
     <script>
         (function() {
             const colorSchemeKey = 'StackColorScheme';
-            if(!localStorage.getItem(colorSchemeKey)){
-                localStorage.setItem(colorSchemeKey, "auto");
-            }
+            localStorage.setItem(colorSchemeKey, "light");
         })();
     </script><script>
     (function() {
@@ -208,26 +220,6 @@
         <li class="menu-bottom-section">
             <ol class="menu">
 
-                
-                    <li id="dark-mode-toggle">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
-  <path stroke="none" d="M0 0h24v24H0z"/>
-  <circle cx="8" cy="12" r="2" />
-  <rect x="2" y="6" width="20" height="12" rx="6" />
-</svg>
-
-
-
-                        <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
-  <path stroke="none" d="M0 0h24v24H0z"/>
-  <circle cx="16" cy="12" r="2" />
-  <rect x="2" y="6" width="20" height="12" rx="6" />
-</svg>
-
-
-
-                        <span>暗色模式</span>
-                    </li>
                 
             </ol>
         </li>

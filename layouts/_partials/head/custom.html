@@ -41,62 +41,76 @@
         color: rgba(255, 255, 255, 0.9) !important;
     }
 
-    /* ====== 中间文章卡片 + 右侧组件：深色半透毛玻璃 ====== */
-    /* 文章列表卡片 */
-    .article-list article {
-        background-color: rgba(18, 6, 16, 0.42) !important;
-        backdrop-filter: blur(7px);
-        -webkit-backdrop-filter: blur(7px);
-        border: 1px solid rgba(255, 200, 225, 0.18) !important;
+    /* ====== 全局：覆盖白色卡片背景变量，一网打尽 ====== */
+    :root {
+        --card-background: rgba(18, 6, 16, 0.42) !important;
+        --card-text-color-main: rgba(255, 255, 255, 0.9) !important;
+        --card-text-color-secondary: rgba(255, 255, 255, 0.7) !important;
+        --card-text-color-tertiary: rgba(255, 255, 255, 0.55) !important;
+        --card-separator-color: rgba(255, 200, 225, 0.15) !important;
     }
-    /* 文章卡片内文字 */
+
+    /* ====== 所有卡片/容器：毛玻璃 + 粉色描边 ====== */
     .article-list article,
-    .article-list article .article-title a,
-    .article-list article .article-details,
-    .article-list article .article-category a,
-    .article-list article .article-time,
-    .article-list article .article-tags a {
+    .article-list--compact,
+    .article-list--tile article,
+    .pagination,
+    .section-card .section-term,
+    .search-form,
+    .widget--toc,
+    .article-toc,
+    .widget.archives .widget-archive--list,
+    .tag-cloud .tagCloud-tags a,
+    .article-content .table-wrapper {
+        backdrop-filter: blur(7px) !important;
+        -webkit-backdrop-filter: blur(7px) !important;
+        border: 1px solid rgba(255, 200, 225, 0.18) !important;
+    }
+
+    /* ====== 所有卡片内文字统一白色 ====== */
+    .article-list article,
+    .article-list article a,
+    .article-list article span,
+    .article-list article time,
+    .article-details,
+    .article-details a,
+    .article-category a,
+    .article-tags a,
+    .article-subtitle,
+    .article-time,
+    .section-card,
+    .section-card a,
+    .section-card span,
+    .pagination .page-link,
+    .search-form,
+    .search-form label,
+    .widget--toc,
+    .widget--toc a,
+    .article-toc,
+    .article-toc a,
+    .widget.archives,
+    .widget.archives a,
+    .widget.archives span,
+    .tag-cloud a,
+    .tag-cloud span {
         color: rgba(255, 255, 255, 0.9) !important;
     }
-    /* 文章卡片内次要文字 */
+    /* 次要文字 */
+    .article-subtitle,
     .article-list article .article-subtitle,
-    .article-list article .article-category a:hover {
-        color: rgba(255, 255, 255, 0.7) !important;
+    .widget.archives .archives-year a span.count,
+    .tag-cloud .tagCloud-tags a:hover {
+        color: rgba(255, 255, 255, 0.65) !important;
     }
 
-    /* 分页导航 */
-    .pagination {
-        background-color: rgba(18, 6, 16, 0.42) !important;
-        backdrop-filter: blur(7px);
-        -webkit-backdrop-filter: blur(7px);
-        border: 1px solid rgba(255, 200, 225, 0.18) !important;
-    }
-    .pagination .page-link {
-        color: rgba(255, 255, 255, 0.9) !important;
-    }
-
-    /* 右侧边栏：所有 widget 容器 */
-    .right-sidebar .widget.archives .widget-archive--list,
-    .right-sidebar .widget--toc,
-    .right-sidebar .search-form.widget,
-    .right-sidebar .widget.categories,
-    .right-sidebar .widget.tag-cloud {
-        background-color: rgba(18, 6, 16, 0.42) !important;
-        backdrop-filter: blur(7px);
-        -webkit-backdrop-filter: blur(7px);
-        border: 1px solid rgba(255, 200, 225, 0.18) !important;
-    }
-    /* 右侧 widget 文字 */
-    .right-sidebar .widget,
-    .right-sidebar .widget a,
-    .right-sidebar .widget span,
-    .right-sidebar .widget label {
-        color: rgba(255, 255, 255, 0.9) !important;
-    }
-    .right-sidebar .widget input {
+    /* 搜索输入框 */
+    .search-form input {
         background-color: rgba(255, 255, 255, 0.12) !important;
         color: rgba(255, 255, 255, 0.9) !important;
         border-color: rgba(255, 200, 225, 0.25) !important;
+    }
+    .search-form input::placeholder {
+        color: rgba(255, 255, 255, 0.5) !important;
     }
 </style>
 <script src="https://fastly.jsdelivr.net/npm/live2d-widgets@1.0.1/dist/autoload.js"></script>

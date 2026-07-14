@@ -39,10 +39,10 @@ rssFullContent = true
     ]
     page     = [{ type = "toc" }]
 
-# ==================== 暗色模式 ====================
+# ==================== 暗色模式（已禁用） ====================
 [colorScheme]
-    toggle  = true
-    default = "auto"
+    toggle  = false
+    default = "light"
 
 # ==================== 评论系统（默认关闭） ====================
 [comments]

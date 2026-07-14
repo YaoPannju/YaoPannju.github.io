@@ -1,11 +1,11 @@
 <!DOCTYPE html>
 <html lang="zh" dir="ltr">
-    <head><script src="/livereload.js?mindelay=10&amp;v=2&amp;port=1313&amp;path=livereload" data-no-instant defer></script><meta charset='utf-8'>
+    <head><meta charset='utf-8'>
 <meta name='viewport' content='width=device-width, initial-scale=1'><meta name='description' content="文章分类">
 <title>分类</title>
 
 
-<link rel="canonical" href="http://localhost:1313/categories/">
+<link rel="canonical" href="https://yaopannju.github.io/categories/">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap">
@@ -14,11 +14,11 @@
 
 <link rel="stylesheet" href="/scss/style.min.e62e09c60ba428a627e03568fa3df938f6a8224f815b5846f00816c17d4a0be4.css"><meta property='og:title' content="分类">
 <meta property='og:description' content="文章分类">
-<meta property='og:url' content='http://localhost:1313/categories/'>
+<meta property='og:url' content='https://yaopannju.github.io/categories/'>
 <meta property='og:site_name' content='灰色不是粉色的个人博客'>
 <meta property='og:type' content='website'><meta property='og:updated_time' content=' 2026-07-14T00:00:00&#43;00:00 '/>
 <meta name="twitter:title" content="分类">
-<meta name="twitter:description" content="文章分类"><link rel="alternate" type="application/rss&#43;xml" href="http://localhost:1313/categories/index.xml">
+<meta name="twitter:description" content="文章分类"><link rel="alternate" type="application/rss&#43;xml" href="https://yaopannju.github.io/categories/index.xml">
 <style>
     #waifu {
         left: auto !important;
@@ -62,61 +62,75 @@
     }
 
      
-     
-    .article-list article {
-        background-color: rgba(18, 6, 16, 0.42) !important;
-        backdrop-filter: blur(7px);
-        -webkit-backdrop-filter: blur(7px);
-        border: 1px solid rgba(255, 200, 225, 0.18) !important;
+    :root {
+        --card-background: rgba(18, 6, 16, 0.42) !important;
+        --card-text-color-main: rgba(255, 255, 255, 0.9) !important;
+        --card-text-color-secondary: rgba(255, 255, 255, 0.7) !important;
+        --card-text-color-tertiary: rgba(255, 255, 255, 0.55) !important;
+        --card-separator-color: rgba(255, 200, 225, 0.15) !important;
     }
+
      
     .article-list article,
-    .article-list article .article-title a,
-    .article-list article .article-details,
-    .article-list article .article-category a,
-    .article-list article .article-time,
-    .article-list article .article-tags a {
+    .article-list--compact,
+    .article-list--tile article,
+    .pagination,
+    .section-card .section-term,
+    .search-form,
+    .widget--toc,
+    .article-toc,
+    .widget.archives .widget-archive--list,
+    .tag-cloud .tagCloud-tags a,
+    .article-content .table-wrapper {
+        backdrop-filter: blur(7px) !important;
+        -webkit-backdrop-filter: blur(7px) !important;
+        border: 1px solid rgba(255, 200, 225, 0.18) !important;
+    }
+
+     
+    .article-list article,
+    .article-list article a,
+    .article-list article span,
+    .article-list article time,
+    .article-details,
+    .article-details a,
+    .article-category a,
+    .article-tags a,
+    .article-subtitle,
+    .article-time,
+    .section-card,
+    .section-card a,
+    .section-card span,
+    .pagination .page-link,
+    .search-form,
+    .search-form label,
+    .widget--toc,
+    .widget--toc a,
+    .article-toc,
+    .article-toc a,
+    .widget.archives,
+    .widget.archives a,
+    .widget.archives span,
+    .tag-cloud a,
+    .tag-cloud span {
         color: rgba(255, 255, 255, 0.9) !important;
     }
      
+    .article-subtitle,
     .article-list article .article-subtitle,
-    .article-list article .article-category a:hover {
-        color: rgba(255, 255, 255, 0.7) !important;
+    .widget.archives .archives-year a span.count,
+    .tag-cloud .tagCloud-tags a:hover {
+        color: rgba(255, 255, 255, 0.65) !important;
     }
 
      
-    .pagination {
-        background-color: rgba(18, 6, 16, 0.42) !important;
-        backdrop-filter: blur(7px);
-        -webkit-backdrop-filter: blur(7px);
-        border: 1px solid rgba(255, 200, 225, 0.18) !important;
-    }
-    .pagination .page-link {
-        color: rgba(255, 255, 255, 0.9) !important;
-    }
-
-     
-    .right-sidebar .widget.archives .widget-archive--list,
-    .right-sidebar .widget--toc,
-    .right-sidebar .search-form.widget,
-    .right-sidebar .widget.categories,
-    .right-sidebar .widget.tag-cloud {
-        background-color: rgba(18, 6, 16, 0.42) !important;
-        backdrop-filter: blur(7px);
-        -webkit-backdrop-filter: blur(7px);
-        border: 1px solid rgba(255, 200, 225, 0.18) !important;
-    }
-     
-    .right-sidebar .widget,
-    .right-sidebar .widget a,
-    .right-sidebar .widget span,
-    .right-sidebar .widget label {
-        color: rgba(255, 255, 255, 0.9) !important;
-    }
-    .right-sidebar .widget input {
+    .search-form input {
         background-color: rgba(255, 255, 255, 0.12) !important;
         color: rgba(255, 255, 255, 0.9) !important;
         border-color: rgba(255, 200, 225, 0.25) !important;
+    }
+    .search-form input::placeholder {
+        color: rgba(255, 255, 255, 0.5) !important;
     }
 </style>
 <script src="https://fastly.jsdelivr.net/npm/live2d-widgets@1.0.1/dist/autoload.js"></script>
@@ -126,9 +140,7 @@
     <script>
         (function() {
             const colorSchemeKey = 'StackColorScheme';
-            if(!localStorage.getItem(colorSchemeKey)){
-                localStorage.setItem(colorSchemeKey, "auto");
-            }
+            localStorage.setItem(colorSchemeKey, "light");
         })();
     </script><script>
     (function() {
@@ -208,26 +220,6 @@
         <li class="menu-bottom-section">
             <ol class="menu">
 
-                
-                    <li id="dark-mode-toggle">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
-  <path stroke="none" d="M0 0h24v24H0z"/>
-  <circle cx="8" cy="12" r="2" />
-  <rect x="2" y="6" width="20" height="12" rx="6" />
-</svg>
-
-
-
-                        <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
-  <path stroke="none" d="M0 0h24v24H0z"/>
-  <circle cx="16" cy="12" r="2" />
-  <rect x="2" y="6" width="20" height="12" rx="6" />
-</svg>
-
-
-
-                        <span>暗色模式</span>
-                    </li>
                 
             </ol>
         </li>
@@ -412,17 +404,17 @@
             </main>
         </div>
         
-<script type="text/javascript" src="/ts/main.9ca38009e9dcd41277c6a2a393142d89cde153ee6eb470eda18fef3d3026f0b9.js" defer></script>
+<script type="text/javascript" src="/ts/main.f856840516f7c2ad1769a8f5937e3d08d6cb386e2cd2dd025ae696e0ff207958.js" defer></script>
 <style>
   body {
-    background: url(http://localhost:1313/background/sakura_PC.jpg) no-repeat center top;
+    background: url(https://yaopannju.github.io/background/sakura_PC.jpg) no-repeat center top;
     background-size: cover;
     background-attachment: fixed;
   }
 </style>
 
 
-<script src=http://localhost:1313/background/sakura.js></script>
+<script src=https://yaopannju.github.io/background/sakura.js></script>
 
 
     </body>
