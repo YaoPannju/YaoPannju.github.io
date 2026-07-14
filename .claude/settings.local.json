@@ -6,7 +6,21 @@
       "Bash(git -c user.name=\"YaoPannju\" -c user.email=\"984080885@qq.com\" add .github/workflows/hugo-deploy.yml)",
       "Bash(git -c user.name=\"YaoPannju\" -c user.email=\"984080885@qq.com\" commit -m \"feat: 添加 GitHub Actions 自动部署工作流\")",
       "Bash(git push *)",
-      "Bash(git remote *)"
+      "Bash(git remote *)",
+      "Bash(curl -sL https://yaopannju.github.io/)",
+      "Bash(curl -sL https://github.com/YaoPannju/YaoPannju.github.io/actions)",
+      "Bash(curl -sL \"https://api.github.com/repos/YaoPannju/YaoPannju.github.io/actions/workflows\")",
+      "Bash(curl -sL \"https://api.github.com/repos/YaoPannju/YaoPannju.github.io/actions/runs?per_page=5\")",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl *)",
+      "Bash(curl -sL \"https://api.github.com/repos/YaoPannju/YaoPannju.github.io/actions/runs?per_page=3\")",
+      "Bash(python3 -c ' *)",
+      "WebFetch(domain:github.com)",
+      "Bash(./hugo.exe --cleanDestinationDir)",
+      "Bash(git -c user.name=\"YaoPannju\" -c user.email=\"984080885@qq.com\" add layouts/ config/)",
+      "Bash(git -c user.name=\"YaoPannju\" -c user.email=\"984080885@qq.com\" status)",
+      "Bash(git -c user.name=\"YaoPannju\" -c user.email=\"984080885@qq.com\" add public/)",
+      "Bash(git -c user.name=YaoPannju -c user.email=984080885@qq.com commit -m 'feat: 添加 Live2D 看板娘 *)"
     ]
   }
 }
