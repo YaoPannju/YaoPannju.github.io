@@ -1,0 +1,20 @@
+# ==================== 站点基础配置 ====================
+# 部署时修改为你的实际域名
+baseURL      = "https://example.org/"
+# 指定本地主题文件夹名称
+theme        = "hugo-theme-stack-4.0.3"
+title        = "灰色不是粉色的个人博客"
+
+# 默认语言为中文
+defaultContentLanguage = "zh"
+# CJK 语言支持（让摘要和字数统计正确）
+hasCJKLanguage         = true
+
+# ==================== 分页 ====================
+[pagination]
+    pagerSize = 10
+
+# ==================== 永久链接 ====================
+[permalinks]
+    post = "/p/:slug/"
+    page = "/:slug/"
