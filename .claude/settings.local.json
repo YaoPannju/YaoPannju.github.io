@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(git commit -m 'fix: 修复 baseURL 并重新构建站点 *)",
+      "Bash(git -c user.name=\"YaoPannju\" -c user.email=\"984080885@qq.com\" add .github/workflows/hugo-deploy.yml)",
+      "Bash(git -c user.name=\"YaoPannju\" -c user.email=\"984080885@qq.com\" commit -m \"feat: 添加 GitHub Actions 自动部署工作流\")",
+      "Bash(git push *)",
+      "Bash(git remote *)"
+    ]
+  }
+}
