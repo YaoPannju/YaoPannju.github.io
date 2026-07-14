@@ -17,5 +17,86 @@
     #waifu-toggle.waifu-toggle-active:hover {
         margin-right: -30px;
     }
+
+    /* ====== 侧边栏毛玻璃效果 + 宽度自适应内容 ====== */
+    .sidebar.left-sidebar {
+        width: fit-content !important;
+        max-width: none !important;
+        padding-left: 28px !important;
+        padding-right: 28px !important;
+        background-color: rgba(20, 8, 18, 0.55) !important;
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+    }
+    .sidebar.left-sidebar .site-name a,
+    .sidebar.left-sidebar .site-description,
+    .sidebar.left-sidebar #main-menu a,
+    .sidebar.left-sidebar #main-menu span,
+    .sidebar.left-sidebar .menu-social a,
+    .site-footer,
+    .site-footer a {
+        color: rgba(255, 255, 255, 0.9) !important;
+    }
+    .sidebar.left-sidebar #dark-mode-toggle span {
+        color: rgba(255, 255, 255, 0.9) !important;
+    }
+
+    /* ====== 中间文章卡片 + 右侧组件：深色半透毛玻璃 ====== */
+    /* 文章列表卡片 */
+    .article-list article {
+        background-color: rgba(18, 6, 16, 0.42) !important;
+        backdrop-filter: blur(7px);
+        -webkit-backdrop-filter: blur(7px);
+        border: 1px solid rgba(255, 200, 225, 0.18) !important;
+    }
+    /* 文章卡片内文字 */
+    .article-list article,
+    .article-list article .article-title a,
+    .article-list article .article-details,
+    .article-list article .article-category a,
+    .article-list article .article-time,
+    .article-list article .article-tags a {
+        color: rgba(255, 255, 255, 0.9) !important;
+    }
+    /* 文章卡片内次要文字 */
+    .article-list article .article-subtitle,
+    .article-list article .article-category a:hover {
+        color: rgba(255, 255, 255, 0.7) !important;
+    }
+
+    /* 分页导航 */
+    .pagination {
+        background-color: rgba(18, 6, 16, 0.42) !important;
+        backdrop-filter: blur(7px);
+        -webkit-backdrop-filter: blur(7px);
+        border: 1px solid rgba(255, 200, 225, 0.18) !important;
+    }
+    .pagination .page-link {
+        color: rgba(255, 255, 255, 0.9) !important;
+    }
+
+    /* 右侧边栏：所有 widget 容器 */
+    .right-sidebar .widget.archives .widget-archive--list,
+    .right-sidebar .widget--toc,
+    .right-sidebar .search-form.widget,
+    .right-sidebar .widget.categories,
+    .right-sidebar .widget.tag-cloud {
+        background-color: rgba(18, 6, 16, 0.42) !important;
+        backdrop-filter: blur(7px);
+        -webkit-backdrop-filter: blur(7px);
+        border: 1px solid rgba(255, 200, 225, 0.18) !important;
+    }
+    /* 右侧 widget 文字 */
+    .right-sidebar .widget,
+    .right-sidebar .widget a,
+    .right-sidebar .widget span,
+    .right-sidebar .widget label {
+        color: rgba(255, 255, 255, 0.9) !important;
+    }
+    .right-sidebar .widget input {
+        background-color: rgba(255, 255, 255, 0.12) !important;
+        color: rgba(255, 255, 255, 0.9) !important;
+        border-color: rgba(255, 200, 225, 0.25) !important;
+    }
 </style>
 <script src="https://fastly.jsdelivr.net/npm/live2d-widgets@1.0.1/dist/autoload.js"></script>
