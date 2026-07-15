@@ -1,11 +1,11 @@
 <!DOCTYPE html>
 <html lang="zh" dir="ltr">
-    <head><meta charset='utf-8'>
+    <head><script src="/livereload.js?mindelay=10&amp;v=2&amp;port=1313&amp;path=livereload" data-no-instant defer></script><meta charset='utf-8'>
 <meta name='viewport' content='width=device-width, initial-scale=1'><meta name='description' content="Hello World">
 <title>404 Page not found</title>
 
 
-<link rel="canonical" href="https://yaopannju.github.io/404.html">
+<link rel="canonical" href="http://localhost:1313/404.html">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap">
@@ -14,9 +14,9 @@
 
 <link rel="stylesheet" href="/scss/style.min.e62e09c60ba428a627e03568fa3df938f6a8224f815b5846f00816c17d4a0be4.css"><meta property='og:title' content="404 Page not found">
 <meta property='og:description' content="Hello World">
-<meta property='og:url' content='https://yaopannju.github.io/404.html'>
+<meta property='og:url' content='http://localhost:1313/404.html'>
 <meta property='og:site_name' content='灰色不是粉色的个人博客'>
-<meta property='og:type' content='website'><meta property='og:updated_time' content=' 2026-07-14T00:00:00&#43;00:00 '/>
+<meta property='og:type' content='website'><meta property='og:updated_time' content=' 2026-07-15T00:00:00&#43;00:00 '/>
 <meta name="twitter:title" content="404 Page not found">
 <meta name="twitter:description" content="Hello World">
 <style>
@@ -131,6 +131,149 @@
     }
     .search-form input::placeholder {
         color: rgba(255, 255, 255, 0.5) !important;
+    }
+
+     
+    .article-content pre,
+    .article-content .highlight {
+         
+        background-color: rgba(8, 2, 6, 0.58) !important;
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+        border: 1px solid rgba(255, 200, 225, 0.15);
+        border-radius: 8px;
+    }
+    .article-content pre {
+        color: #f8f8f2 !important;
+    }
+
+     
+    .article-content .highlight pre {
+        background-color: transparent !important;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+        border: none;
+        border-radius: 0;
+    }
+
+     
+    .article-content :not(pre) > code {
+        background-color: rgba(255, 255, 255, 0.1) !important;
+        color: rgba(255, 255, 255, 0.85) !important;
+    }
+
+     
+    .article-content .copyCodeButton {
+        background: rgba(18, 6, 16, 0.55) !important;
+        color: rgba(255, 255, 255, 0.7) !important;
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
+        border: 1px solid rgba(255, 200, 225, 0.12) !important;
+        border-radius: 6px;
+        font-size: 12px;
+        padding: 4px 12px;
+    }
+    .article-content .copyCodeButton:hover {
+        color: rgba(255, 255, 255, 0.95) !important;
+        background: rgba(30, 10, 26, 0.7) !important;
+    }
+
+     
+    .article-content .chroma {
+        color: #f8f8f2;
+        background-color: transparent !important;
+    }
+     
+    .article-content .chroma .k,
+    .article-content .chroma .kc,
+    .article-content .chroma .kd,
+    .article-content .chroma .kn,
+    .article-content .chroma .kp,
+    .article-content .chroma .kr,
+    .article-content .chroma .kt,
+    .article-content .chroma .no {
+        color: #66d9ef;
+    }
+     
+    .article-content .chroma .s,
+    .article-content .chroma .s1,
+    .article-content .chroma .s2,
+    .article-content .chroma .sb,
+    .article-content .chroma .sc,
+    .article-content .chroma .sd,
+    .article-content .chroma .sh,
+    .article-content .chroma .si,
+    .article-content .chroma .sx,
+    .article-content .chroma .sa,
+    .article-content .chroma .dl,
+    .article-content .chroma .l,
+    .article-content .chroma .ld {
+        color: #e6db74;
+    }
+     
+    .article-content .chroma .na,
+    .article-content .chroma .nc,
+    .article-content .chroma .nd,
+    .article-content .chroma .ne,
+    .article-content .chroma .nf,
+    .article-content .chroma .nx,
+    .article-content .chroma .gi {
+        color: #a6e22e;
+    }
+     
+    .article-content .chroma .c,
+    .article-content .chroma .c1,
+    .article-content .chroma .cm,
+    .article-content .chroma .ch,
+    .article-content .chroma .cs,
+    .article-content .chroma .cp,
+    .article-content .chroma .cpf,
+    .article-content .chroma .gu {
+        color: #75715e;
+    }
+     
+    .article-content .chroma .m,
+    .article-content .chroma .mb,
+    .article-content .chroma .mf,
+    .article-content .chroma .mh,
+    .article-content .chroma .mi,
+    .article-content .chroma .il,
+    .article-content .chroma .mo,
+    .article-content .chroma .se {
+        color: #ae81ff;
+    }
+     
+    .article-content .chroma .o,
+    .article-content .chroma .ow,
+    .article-content .chroma .nt,
+    .article-content .chroma .gd {
+        color: #f92672;
+    }
+     
+    .article-content .chroma .n,
+    .article-content .chroma .nb,
+    .article-content .chroma .bp,
+    .article-content .chroma .ni,
+    .article-content .chroma .nl,
+    .article-content .chroma .nn,
+    .article-content .chroma .nv,
+    .article-content .chroma .vc,
+    .article-content .chroma .vg,
+    .article-content .chroma .vi,
+    .article-content .chroma .vm,
+    .article-content .chroma .fm,
+    .article-content .chroma .py,
+    .article-content .chroma .p {
+        color: #f8f8f2;
+    }
+     
+    .article-content .chroma .err {
+        color: #f92672;
+    }
+
+     
+    .article-content table tr:nth-child(even) {
+        background-color: rgba(255, 255, 255, 0.03) !important;
     }
 </style>
 <script src="https://fastly.jsdelivr.net/npm/live2d-widgets@1.0.1/dist/autoload.js"></script>
@@ -281,17 +424,17 @@
             </main>
         </div>
         
-<script type="text/javascript" src="/ts/main.f856840516f7c2ad1769a8f5937e3d08d6cb386e2cd2dd025ae696e0ff207958.js" defer></script>
+<script type="text/javascript" src="/ts/main.9ca38009e9dcd41277c6a2a393142d89cde153ee6eb470eda18fef3d3026f0b9.js" defer></script>
 <style>
   body {
-    background: url(https://yaopannju.github.io/background/sakura_PC.jpg) no-repeat center top;
+    background: url(http://localhost:1313/background/sakura_PC.jpg) no-repeat center top;
     background-size: cover;
     background-attachment: fixed;
   }
 </style>
 
 
-<script src=https://yaopannju.github.io/background/sakura.js></script>
+<script src=http://localhost:1313/background/sakura.js></script>
 
 
     </body>

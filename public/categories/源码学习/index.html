@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="zh" dir="ltr">
+    <head><script src="/livereload.js?mindelay=10&amp;v=2&amp;port=1313&amp;path=livereload" data-no-instant defer></script><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'><meta name='description' content="Hello World">
+<title>源码学习</title>
+
+
+<link rel="canonical" href="http://localhost:1313/categories/%E6%BA%90%E7%A0%81%E5%AD%A6%E4%B9%A0/">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap">
+
+
+<link rel="stylesheet" href="/scss/style.min.e62e09c60ba428a627e03568fa3df938f6a8224f815b5846f00816c17d4a0be4.css"><meta property='og:title' content="源码学习">
+<meta property='og:description' content="Hello World">
+<meta property='og:url' content='http://localhost:1313/categories/%E6%BA%90%E7%A0%81%E5%AD%A6%E4%B9%A0/'>
+<meta property='og:site_name' content='灰色不是粉色的个人博客'>
+<meta property='og:type' content='website'><meta property='og:updated_time' content=' 2026-07-15T00:00:00&#43;00:00 '/>
+<meta name="twitter:title" content="源码学习">
+<meta name="twitter:description" content="Hello World"><link rel="alternate" type="application/rss&#43;xml" href="http://localhost:1313/categories/%E6%BA%90%E7%A0%81%E5%AD%A6%E4%B9%A0/index.xml">
+<style>
+    #waifu {
+        left: auto !important;
+        right: 10px !important;
+    }
+    #waifu-toggle {
+        left: auto !important;
+        right: 0 !important;
+        margin-left: 0 !important;
+        margin-right: -100px;
+        justify-content: flex-start !important;
+    }
+    #waifu-toggle.waifu-toggle-active {
+        margin-right: -50px;
+    }
+    #waifu-toggle.waifu-toggle-active:hover {
+        margin-right: -30px;
+    }
+
+     
+    .sidebar.left-sidebar {
+        width: fit-content !important;
+        max-width: none !important;
+        padding-left: 28px !important;
+        padding-right: 28px !important;
+        background-color: rgba(20, 8, 18, 0.55) !important;
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+    }
+    .sidebar.left-sidebar .site-name a,
+    .sidebar.left-sidebar .site-description,
+    .sidebar.left-sidebar #main-menu a,
+    .sidebar.left-sidebar #main-menu span,
+    .sidebar.left-sidebar .menu-social a,
+    .site-footer,
+    .site-footer a {
+        color: rgba(255, 255, 255, 0.9) !important;
+    }
+    .sidebar.left-sidebar #dark-mode-toggle span {
+        color: rgba(255, 255, 255, 0.9) !important;
+    }
+
+     
+    :root {
+        --card-background: rgba(18, 6, 16, 0.42) !important;
+        --card-text-color-main: rgba(255, 255, 255, 0.9) !important;
+        --card-text-color-secondary: rgba(255, 255, 255, 0.7) !important;
+        --card-text-color-tertiary: rgba(255, 255, 255, 0.55) !important;
+        --card-separator-color: rgba(255, 200, 225, 0.15) !important;
+    }
+
+     
+    .article-list article,
+    .article-list--compact,
+    .article-list--tile article,
+    .pagination,
+    .section-card .section-term,
+    .search-form,
+    .widget--toc,
+    .article-toc,
+    .widget.archives .widget-archive--list,
+    .tag-cloud .tagCloud-tags a,
+    .article-content .table-wrapper {
+        backdrop-filter: blur(7px) !important;
+        -webkit-backdrop-filter: blur(7px) !important;
+        border: 1px solid rgba(255, 200, 225, 0.18) !important;
+    }
+
+     
+    .article-list article,
+    .article-list article a,
+    .article-list article span,
+    .article-list article time,
+    .article-details,
+    .article-details a,
+    .article-category a,
+    .article-tags a,
+    .article-subtitle,
+    .article-time,
+    .section-card,
+    .section-card a,
+    .section-card span,
+    .pagination .page-link,
+    .search-form,
+    .search-form label,
+    .widget--toc,
+    .widget--toc a,
+    .article-toc,
+    .article-toc a,
+    .widget.archives,
+    .widget.archives a,
+    .widget.archives span,
+    .tag-cloud a,
+    .tag-cloud span {
+        color: rgba(255, 255, 255, 0.9) !important;
+    }
+     
+    .article-subtitle,
+    .article-list article .article-subtitle,
+    .widget.archives .archives-year a span.count,
+    .tag-cloud .tagCloud-tags a:hover {
+        color: rgba(255, 255, 255, 0.65) !important;
+    }
+
+     
+    .search-form input {
+        background-color: rgba(255, 255, 255, 0.12) !important;
+        color: rgba(255, 255, 255, 0.9) !important;
+        border-color: rgba(255, 200, 225, 0.25) !important;
+    }
+    .search-form input::placeholder {
+        color: rgba(255, 255, 255, 0.5) !important;
+    }
+</style>
+<script src="https://fastly.jsdelivr.net/npm/live2d-widgets@1.0.1/dist/autoload.js"></script>
+
+    </head>
+    <body class="">
+    <script>
+        (function() {
+            const colorSchemeKey = 'StackColorScheme';
+            localStorage.setItem(colorSchemeKey, "light");
+        })();
+    </script><script>
+    (function() {
+        const colorSchemeKey = 'StackColorScheme';
+        const colorSchemeItem = localStorage.getItem(colorSchemeKey);
+        const supportDarkMode = window.matchMedia('(prefers-color-scheme: dark)').matches === true;
+
+        if (colorSchemeItem == 'dark' || colorSchemeItem === 'auto' && supportDarkMode) {
+            
+
+            document.documentElement.dataset.scheme = 'dark';
+        } else {
+            document.documentElement.dataset.scheme = 'light';
+        }
+    })();
+</script>
+<div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky ">
+    <button class="hamburger hamburger--spin" type="button" id="toggle-menu" aria-label="切换菜单">
+        <span class="hamburger-box">
+            <span class="hamburger-inner"></span>
+        </span>
+    </button>
+
+    <header>
+        <figure class="site-avatar">
+                <a href="/">
+                    <img src="/img/avatar.jpg" 
+                        width=""
+                        height=""
+                        class="site-logo"
+                        loading="lazy"
+                        alt="Avatar">
+                </a>
+                
+            </figure>
+        
+        
+        <div class="site-meta">
+            <h1 class="site-name"><a href="/">灰色不是粉色的个人博客</a></h1>
+            <h2 class="site-description">Hello World</h2>
+        </div>
+    </header><ol class="menu" id="main-menu">
+        
+        
+        
+        <li >
+            <a href='/%E5%85%B3%E4%BA%8E/' >
+                
+                <span>关于</span>
+            </a>
+        </li>
+        
+        
+        <li >
+            <a href='/%E5%BD%92%E6%A1%A3/' >
+                
+                <span>归档</span>
+            </a>
+        </li>
+        
+        
+        <li >
+            <a href='/%E6%90%9C%E7%B4%A2/' >
+                
+                <span>搜索</span>
+            </a>
+        </li>
+        
+        
+        <li >
+            <a href='/categories/' >
+                
+                <span>分类</span>
+            </a>
+        </li>
+        
+        <li class="menu-bottom-section">
+            <ol class="menu">
+
+                
+            </ol>
+        </li>
+    </ol>
+</aside>
+
+    <aside class="sidebar right-sidebar sticky">
+        
+            
+                <form action="/%E6%90%9C%E7%B4%A2/" class="search-form widget" >
+        <p>
+            <label>搜索</label>
+            <input name="keyword" required placeholder="输入关键词..." />
+        
+            <button title="搜索">
+                <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <path stroke="none" d="M0 0h24v24H0z"/>
+  <circle cx="10" cy="10" r="7" />
+  <line x1="21" y1="21" x2="15" y2="15" />
+</svg>
+
+
+
+            </button>
+        </p>
+    </form>
+            
+        
+            
+                <section class="widget archives">
+        <div class="widget-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-infinity" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <path stroke="none" d="M0 0h24v24H0z"/>
+  <path d="M9.828 9.172a4 4 0 1 0 0 5.656 a10 10 0 0 0 2.172 -2.828a10 10 0 0 1 2.172 -2.828 a4 4 0 1 1 0 5.656a10 10 0 0 1 -2.172 -2.828a10 10 0 0 0 -2.172 -2.828" />
+</svg>
+
+
+
+        </div>
+        <h2 class="widget-title section-title">
+            <a href="/%E5%BD%92%E6%A1%A3/">
+                归档
+            </a>
+        </h2>
+
+        
+        
+        
+        <div class="widget-archive--list">
+            <div class="archives-year">
+                    <a href="/%E5%BD%92%E6%A1%A3/#2026">
+                        
+                            <span class="year">2026</span>
+                            <span class="count">2</span>
+                        
+                    </a> 
+                </div>
+            
+        </div>
+    </section>
+            
+        
+            
+                
+<section class="widget tagCloud">
+    <div class="widget-icon">
+        <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <path stroke="none" d="M0 0h24v24H0z"/>
+  <line x1="5" y1="9" x2="19" y2="9" />
+  <line x1="5" y1="15" x2="19" y2="15" />
+  <line x1="11" y1="4" x2="7" y2="20" />
+  <line x1="17" y1="4" x2="13" y2="20" />
+</svg>
+
+
+
+    </div>
+    <h2 class="widget-title section-title">
+        
+            <a href="/categories/">
+                分类
+            </a>
+        
+    </h2>
+
+    <div class="tagCloud-tags">
+        
+            <a href="/categories/%E5%85%B6%E5%AE%83/">
+                其它
+            </a>
+        
+            <a href="/categories/%E6%BA%90%E7%A0%81%E5%AD%A6%E4%B9%A0/">
+                源码学习
+            </a>
+        
+    </div>
+</section>
+
+            
+        
+            
+                
+<section class="widget tagCloud">
+    <div class="widget-icon">
+        <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-tag" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <path stroke="none" d="M0 0h24v24H0z"/>
+  <path d="M11 3L20 12a1.5 1.5 0 0 1 0 2L14 20a1.5 1.5 0 0 1 -2 0L3 11v-4a4 4 0 0 1 4 -4h4" />
+  <circle cx="9" cy="9" r="2" />
+</svg>
+
+
+
+    </div>
+    <h2 class="widget-title section-title">
+        
+            <a href="/tags/">
+                标签云
+            </a>
+        
+    </h2>
+
+    <div class="tagCloud-tags">
+        
+            <a href="/tags/c&#43;&#43;/">
+                C&#43;&#43;
+            </a>
+        
+            <a href="/tags/hugo/">
+                Hugo
+            </a>
+        
+            <a href="/tags/obs/">
+                OBS
+            </a>
+        
+            <a href="/tags/obs-studio/">
+                Obs-Studio
+            </a>
+        
+            <a href="/tags/%E5%8D%9A%E5%AE%A2/">
+                博客
+            </a>
+        
+            <a href="/tags/%E6%BA%90%E7%A0%81%E5%AD%A6%E4%B9%A0/">
+                源码学习
+            </a>
+        
+    </div>
+</section>
+
+            
+        
+    </aside>
+
+
+            <main class="main full-width">
+    <header>
+        <h3 class="section-title">
+            
+                分类
+            
+        </h3>
+
+        <div class="section-card">
+            <div class="section-details">
+                <h3 class="section-count">1 个页面</h3>
+                <h1 class="section-term">源码学习</h1>
+                
+            </div>
+        </div>
+    </header>
+    
+    
+        <section class="article-list--compact">
+            
+                <article>
+    <a href="/p/obs-studio-%E6%BA%90%E7%A0%81%E5%AD%A6%E4%B9%A0%E4%B8%80%E4%B8%BB%E7%BA%BF%E7%A8%8B%E5%90%AF%E5%8A%A8%E6%B5%81%E7%A8%8B%E6%A2%B3%E7%90%86/">
+        <div class="article-details">
+            <h2 class="article-title">OBS Studio 源码学习（一）：主线程启动流程梳理</h2>
+                <footer class="article-meta"><time datetime="2026-07-15T00:00:00Z">2026-07-15</time>
+                </footer></div>
+    </a>
+</article>
+            
+        </section>
+    <footer class="site-footer">
+    <section class="copyright">
+        &copy; 
+        
+        2026 灰色不是粉色的个人博客
+    </section>
+    
+    <section class="powerby">
+        使用 <a href="https://gohugo.io/" target="_blank" rel="noopener">Hugo</a> 构建 <br />
+        主题 <b><a href="https://github.com/CaiJimmy/hugo-theme-stack" target="_blank" rel="noopener" data-version="4.0.3">Stack</a></b> 由 <a href="https://jimmycai.com" target="_blank" rel="noopener">Jimmy</a> 设计
+    </section>
+</footer>
+
+
+            </main>
+        </div>
+        
+<script type="text/javascript" src="/ts/main.9ca38009e9dcd41277c6a2a393142d89cde153ee6eb470eda18fef3d3026f0b9.js" defer></script>
+<style>
+  body {
+    background: url(http://localhost:1313/background/sakura_PC.jpg) no-repeat center top;
+    background-size: cover;
+    background-attachment: fixed;
+  }
+</style>
+
+
+<script src=http://localhost:1313/background/sakura.js></script>
+
+
+    </body>
+</html>
