@@ -3,7 +3,7 @@ title: "OBS Studio 源码学习（一）：主线程启动流程梳理"
 description: "从 main() 到 exec()，梳理 OBS Studio 的主线程启动全流程，理解 obs_core、插件注册机制、三大核心线程的启动时机。"
 date: 2026-07-15
 tags: ["OBS", "源码学习", "C++", "obs-studio"]
-categories: ["源码学习"]
+categories: ["OBS Studio源码学习"]
 image: ""
 ---
 

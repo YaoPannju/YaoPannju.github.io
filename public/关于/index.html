@@ -132,6 +132,157 @@
     .search-form input::placeholder {
         color: rgba(255, 255, 255, 0.5) !important;
     }
+
+     
+    .article-content pre,
+    .article-content .highlight {
+         
+        background-color: rgba(8, 2, 6, 0.58) !important;
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+        border: 1px solid rgba(255, 200, 225, 0.15);
+        border-radius: 8px;
+    }
+    .article-content pre {
+        color: #f8f8f2 !important;
+    }
+
+     
+    .article-content .highlight pre {
+        background-color: transparent !important;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+        border: none;
+        border-radius: 0;
+    }
+
+     
+    .article-content :not(pre) > code {
+        background-color: rgba(255, 255, 255, 0.1) !important;
+        color: rgba(255, 255, 255, 0.85) !important;
+    }
+
+     
+    .article-content .copyCodeButton {
+        background: rgba(18, 6, 16, 0.55) !important;
+        color: rgba(255, 255, 255, 0.7) !important;
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
+        border: 1px solid rgba(255, 200, 225, 0.12) !important;
+        border-radius: 6px;
+        font-size: 12px;
+        padding: 4px 12px;
+    }
+    .article-content .copyCodeButton:hover {
+        color: rgba(255, 255, 255, 0.95) !important;
+        background: rgba(30, 10, 26, 0.7) !important;
+    }
+
+     
+    .article-content .chroma {
+        color: #f8f8f2;
+        background-color: transparent !important;
+    }
+     
+    .article-content .chroma .k,
+    .article-content .chroma .kc,
+    .article-content .chroma .kd,
+    .article-content .chroma .kn,
+    .article-content .chroma .kp,
+    .article-content .chroma .kr,
+    .article-content .chroma .kt,
+    .article-content .chroma .no {
+        color: #66d9ef;
+    }
+     
+    .article-content .chroma .s,
+    .article-content .chroma .s1,
+    .article-content .chroma .s2,
+    .article-content .chroma .sb,
+    .article-content .chroma .sc,
+    .article-content .chroma .sd,
+    .article-content .chroma .sh,
+    .article-content .chroma .si,
+    .article-content .chroma .sx,
+    .article-content .chroma .sa,
+    .article-content .chroma .dl,
+    .article-content .chroma .l,
+    .article-content .chroma .ld {
+        color: #e6db74;
+    }
+     
+    .article-content .chroma .na,
+    .article-content .chroma .nc,
+    .article-content .chroma .nd,
+    .article-content .chroma .ne,
+    .article-content .chroma .nf,
+    .article-content .chroma .nx,
+    .article-content .chroma .gi {
+        color: #a6e22e;
+    }
+     
+    .article-content .chroma .c,
+    .article-content .chroma .c1,
+    .article-content .chroma .cm,
+    .article-content .chroma .ch,
+    .article-content .chroma .cs,
+    .article-content .chroma .cp,
+    .article-content .chroma .cpf,
+    .article-content .chroma .gu {
+        color: #75715e;
+    }
+     
+    .article-content .chroma .m,
+    .article-content .chroma .mb,
+    .article-content .chroma .mf,
+    .article-content .chroma .mh,
+    .article-content .chroma .mi,
+    .article-content .chroma .il,
+    .article-content .chroma .mo,
+    .article-content .chroma .se {
+        color: #ae81ff;
+    }
+     
+    .article-content .chroma .o,
+    .article-content .chroma .ow,
+    .article-content .chroma .nt,
+    .article-content .chroma .gd {
+        color: #f92672;
+    }
+     
+    .article-content .chroma .n,
+    .article-content .chroma .nb,
+    .article-content .chroma .bp,
+    .article-content .chroma .ni,
+    .article-content .chroma .nl,
+    .article-content .chroma .nn,
+    .article-content .chroma .nv,
+    .article-content .chroma .vc,
+    .article-content .chroma .vg,
+    .article-content .chroma .vi,
+    .article-content .chroma .vm,
+    .article-content .chroma .fm,
+    .article-content .chroma .py,
+    .article-content .chroma .p {
+        color: #f8f8f2;
+    }
+     
+    .article-content .chroma .err {
+        color: #f92672;
+    }
+
+     
+    .toc-widget-title {
+        padding: 15px 20px 0 20px;
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: rgba(255, 255, 255, 0.9);
+    }
+
+     
+    .article-content table tr:nth-child(even) {
+        background-color: rgba(255, 255, 255, 0.03) !important;
+    }
 </style>
 <script src="https://fastly.jsdelivr.net/npm/live2d-widgets@1.0.1/dist/autoload.js"></script>
 
