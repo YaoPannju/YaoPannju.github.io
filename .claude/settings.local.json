@@ -22,7 +22,8 @@
       "Bash(git -c user.name=\"YaoPannju\" -c user.email=\"984080885@qq.com\" add public/)",
       "Bash(git -c user.name=YaoPannju -c user.email=984080885@qq.com commit -m 'feat: 添加 Live2D 看板娘 *)",
       "Bash(./hugo.exe *)",
-      "Bash(git checkout *)"
+      "Bash(git checkout *)",
+      "Bash(hugo --buildDrafts)"
     ]
   }
 }

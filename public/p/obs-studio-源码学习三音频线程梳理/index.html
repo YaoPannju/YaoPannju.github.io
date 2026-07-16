@@ -1,0 +1,1055 @@
+<!DOCTYPE html>
+<html lang="zh" dir="ltr">
+    <head><script src="/livereload.js?mindelay=10&amp;v=2&amp;port=1313&amp;path=livereload" data-no-instant defer></script><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'><meta name='description' content="从 audio_output_open 到 input_and_output，完整梳理 OBS Studio 音频子系统：核心音频线程、6 mix × 8 channel 架构、动态缓冲机制、以及多平台采集线程的数据流全景。">
+<title>OBS Studio 源码学习（三）：音频线程梳理</title>
+
+
+<link rel="canonical" href="http://localhost:1313/p/obs-studio-%E6%BA%90%E7%A0%81%E5%AD%A6%E4%B9%A0%E4%B8%89%E9%9F%B3%E9%A2%91%E7%BA%BF%E7%A8%8B%E6%A2%B3%E7%90%86/">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap">
+
+
+<link rel="stylesheet" href="/scss/style.min.59c5eb617b2b83358d0baf163162325d5249a2be44239b430beb29a87c1ddbe4.css"><meta property='og:title' content="OBS Studio 源码学习（三）：音频线程梳理">
+<meta property='og:description' content="从 audio_output_open 到 input_and_output，完整梳理 OBS Studio 音频子系统：核心音频线程、6 mix × 8 channel 架构、动态缓冲机制、以及多平台采集线程的数据流全景。">
+<meta property='og:url' content='http://localhost:1313/p/obs-studio-%E6%BA%90%E7%A0%81%E5%AD%A6%E4%B9%A0%E4%B8%89%E9%9F%B3%E9%A2%91%E7%BA%BF%E7%A8%8B%E6%A2%B3%E7%90%86/'>
+<meta property='og:site_name' content='灰色不是粉色的个人博客'>
+<meta property='og:type' content='article'><meta property='article:section' content='Post' /><meta property='article:tag' content='OBS' /><meta property='article:tag' content='源码学习' /><meta property='article:tag' content='C&#43;&#43;' /><meta property='article:tag' content='obs-studio' /><meta property='article:published_time' content='2026-07-16T00:00:00&#43;00:00'/><meta property='article:modified_time' content='2026-07-16T00:00:00&#43;00:00'/>
+<meta name="twitter:title" content="OBS Studio 源码学习（三）：音频线程梳理">
+<meta name="twitter:description" content="从 audio_output_open 到 input_and_output，完整梳理 OBS Studio 音频子系统：核心音频线程、6 mix × 8 channel 架构、动态缓冲机制、以及多平台采集线程的数据流全景。">
+<style>
+    #waifu {
+        left: auto !important;
+        right: 10px !important;
+    }
+    #waifu-toggle {
+        left: auto !important;
+        right: 0 !important;
+        margin-left: 0 !important;
+        margin-right: -100px;
+        justify-content: flex-start !important;
+    }
+    #waifu-toggle.waifu-toggle-active {
+        margin-right: -50px;
+    }
+    #waifu-toggle.waifu-toggle-active:hover {
+        margin-right: -30px;
+    }
+
+     
+    .sidebar.left-sidebar {
+        width: fit-content !important;
+        max-width: none !important;
+        padding-left: 28px !important;
+        padding-right: 28px !important;
+        background-color: rgba(20, 8, 18, 0.55) !important;
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+    }
+    .sidebar.left-sidebar .site-name a,
+    .sidebar.left-sidebar .site-description,
+    .sidebar.left-sidebar #main-menu a,
+    .sidebar.left-sidebar #main-menu span,
+    .sidebar.left-sidebar .menu-social a,
+    .site-footer,
+    .site-footer a {
+        color: rgba(255, 255, 255, 0.9) !important;
+    }
+    .sidebar.left-sidebar #dark-mode-toggle span {
+        color: rgba(255, 255, 255, 0.9) !important;
+    }
+
+     
+    :root {
+        --card-background: rgba(18, 6, 16, 0.70) !important;
+        --card-text-color-main: rgba(255, 255, 255, 0.9) !important;
+        --card-text-color-secondary: rgba(255, 255, 255, 0.7) !important;
+        --card-text-color-tertiary: rgba(255, 255, 255, 0.55) !important;
+        --card-separator-color: rgba(255, 200, 225, 0.15) !important;
+    }
+
+     
+    .article-list article,
+    .article-list--compact,
+    .article-list--tile article,
+    .pagination,
+    .section-card .section-term,
+    .search-form,
+    .widget--toc,
+    .article-toc,
+    .widget.archives .widget-archive--list,
+    .tag-cloud .tagCloud-tags a,
+    .article-content .table-wrapper {
+        backdrop-filter: blur(7px) !important;
+        -webkit-backdrop-filter: blur(7px) !important;
+        border: 1px solid rgba(255, 200, 225, 0.18) !important;
+    }
+
+     
+    .article-list article,
+    .article-list article a,
+    .article-list article span,
+    .article-list article time,
+    .article-details,
+    .article-details a,
+    .article-category a,
+    .article-tags a,
+    .article-subtitle,
+    .article-time,
+    .section-card,
+    .section-card a,
+    .section-card span,
+    .pagination .page-link,
+    .search-form,
+    .search-form label,
+    .widget--toc,
+    .widget--toc a,
+    .article-toc,
+    .article-toc a,
+    .widget.archives,
+    .widget.archives a,
+    .widget.archives span,
+    .tag-cloud a,
+    .tag-cloud span {
+        color: rgba(255, 255, 255, 0.9) !important;
+    }
+     
+    .article-subtitle,
+    .article-list article .article-subtitle,
+    .widget.archives .archives-year a span.count,
+    .tag-cloud .tagCloud-tags a:hover {
+        color: rgba(255, 255, 255, 0.65) !important;
+    }
+
+     
+    .search-form input {
+        background-color: rgba(255, 255, 255, 0.12) !important;
+        color: rgba(255, 255, 255, 0.9) !important;
+        border-color: rgba(255, 200, 225, 0.25) !important;
+    }
+    .search-form input::placeholder {
+        color: rgba(255, 255, 255, 0.5) !important;
+    }
+
+     
+    .article-content pre,
+    .article-content .highlight {
+         
+        background-color: rgba(8, 2, 6, 0.58) !important;
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+        border: 1px solid rgba(255, 200, 225, 0.15);
+        border-radius: 8px;
+    }
+    .article-content pre {
+        color: #f8f8f2 !important;
+    }
+
+     
+    .article-content .highlight pre {
+        background-color: transparent !important;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+        border: none;
+        border-radius: 0;
+    }
+
+     
+    .article-content :not(pre) > code {
+        background-color: rgba(255, 255, 255, 0.1) !important;
+        color: rgba(255, 255, 255, 0.85) !important;
+    }
+
+     
+    .article-content .copyCodeButton {
+        background: rgba(18, 6, 16, 0.55) !important;
+        color: rgba(255, 255, 255, 0.7) !important;
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
+        border: 1px solid rgba(255, 200, 225, 0.12) !important;
+        border-radius: 6px;
+        font-size: 12px;
+        padding: 4px 12px;
+    }
+    .article-content .copyCodeButton:hover {
+        color: rgba(255, 255, 255, 0.95) !important;
+        background: rgba(30, 10, 26, 0.7) !important;
+    }
+
+     
+    .article-content .chroma {
+        color: #f8f8f2;
+        background-color: transparent !important;
+    }
+     
+    .article-content .chroma .k,
+    .article-content .chroma .kc,
+    .article-content .chroma .kd,
+    .article-content .chroma .kn,
+    .article-content .chroma .kp,
+    .article-content .chroma .kr,
+    .article-content .chroma .kt,
+    .article-content .chroma .no {
+        color: #66d9ef;
+    }
+     
+    .article-content .chroma .s,
+    .article-content .chroma .s1,
+    .article-content .chroma .s2,
+    .article-content .chroma .sb,
+    .article-content .chroma .sc,
+    .article-content .chroma .sd,
+    .article-content .chroma .sh,
+    .article-content .chroma .si,
+    .article-content .chroma .sx,
+    .article-content .chroma .sa,
+    .article-content .chroma .dl,
+    .article-content .chroma .l,
+    .article-content .chroma .ld {
+        color: #e6db74;
+    }
+     
+    .article-content .chroma .na,
+    .article-content .chroma .nc,
+    .article-content .chroma .nd,
+    .article-content .chroma .ne,
+    .article-content .chroma .nf,
+    .article-content .chroma .nx,
+    .article-content .chroma .gi {
+        color: #a6e22e;
+    }
+     
+    .article-content .chroma .c,
+    .article-content .chroma .c1,
+    .article-content .chroma .cm,
+    .article-content .chroma .ch,
+    .article-content .chroma .cs,
+    .article-content .chroma .cp,
+    .article-content .chroma .cpf,
+    .article-content .chroma .gu {
+        color: #75715e;
+    }
+     
+    .article-content .chroma .m,
+    .article-content .chroma .mb,
+    .article-content .chroma .mf,
+    .article-content .chroma .mh,
+    .article-content .chroma .mi,
+    .article-content .chroma .il,
+    .article-content .chroma .mo,
+    .article-content .chroma .se {
+        color: #ae81ff;
+    }
+     
+    .article-content .chroma .o,
+    .article-content .chroma .ow,
+    .article-content .chroma .nt,
+    .article-content .chroma .gd {
+        color: #f92672;
+    }
+     
+    .article-content .chroma .n,
+    .article-content .chroma .nb,
+    .article-content .chroma .bp,
+    .article-content .chroma .ni,
+    .article-content .chroma .nl,
+    .article-content .chroma .nn,
+    .article-content .chroma .nv,
+    .article-content .chroma .vc,
+    .article-content .chroma .vg,
+    .article-content .chroma .vi,
+    .article-content .chroma .vm,
+    .article-content .chroma .fm,
+    .article-content .chroma .py,
+    .article-content .chroma .p {
+        color: #f8f8f2;
+    }
+     
+    .article-content .chroma .err {
+        color: #f92672;
+    }
+
+     
+    .toc-widget-title {
+        padding: 15px 20px 0 20px;
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: rgba(255, 255, 255, 0.9);
+    }
+
+     
+    .article-content table tr:nth-child(even) {
+        background-color: rgba(255, 255, 255, 0.03) !important;
+    }
+</style>
+<script src="https://fastly.jsdelivr.net/npm/live2d-widgets@1.0.1/dist/autoload.js"></script>
+
+    </head>
+    <body class="
+    article-page
+    ">
+    <script>
+        (function() {
+            const colorSchemeKey = 'StackColorScheme';
+            localStorage.setItem(colorSchemeKey, "light");
+        })();
+    </script><script>
+    (function() {
+        const colorSchemeKey = 'StackColorScheme';
+        const colorSchemeItem = localStorage.getItem(colorSchemeKey);
+        const supportDarkMode = window.matchMedia('(prefers-color-scheme: dark)').matches === true;
+
+        if (colorSchemeItem == 'dark' || colorSchemeItem === 'auto' && supportDarkMode) {
+            
+
+            document.documentElement.dataset.scheme = 'dark';
+        } else {
+            document.documentElement.dataset.scheme = 'light';
+        }
+    })();
+</script>
+<div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky ">
+    <button class="hamburger hamburger--spin" type="button" id="toggle-menu" aria-label="切换菜单">
+        <span class="hamburger-box">
+            <span class="hamburger-inner"></span>
+        </span>
+    </button>
+
+    <header>
+        <figure class="site-avatar">
+                <a href="/">
+                    <img src="/img/avatar.jpg" 
+                        width=""
+                        height=""
+                        class="site-logo"
+                        loading="lazy"
+                        alt="Avatar">
+                </a>
+                
+            </figure>
+        
+        
+        <div class="site-meta">
+            <h1 class="site-name"><a href="/">灰色不是粉色的个人博客</a></h1>
+            <h2 class="site-description">Hello World</h2>
+        </div>
+    </header><ol class="menu" id="main-menu">
+        
+        
+        
+        <li >
+            <a href='/%E5%85%B3%E4%BA%8E/' >
+                
+                <span>关于</span>
+            </a>
+        </li>
+        
+        
+        <li >
+            <a href='/%E5%BD%92%E6%A1%A3/' >
+                
+                <span>归档</span>
+            </a>
+        </li>
+        
+        
+        <li >
+            <a href='/%E6%90%9C%E7%B4%A2/' >
+                
+                <span>搜索</span>
+            </a>
+        </li>
+        
+        
+        <li >
+            <a href='/categories/' >
+                
+                <span>分类</span>
+            </a>
+        </li>
+        
+        <li class="menu-bottom-section">
+            <ol class="menu">
+
+                
+            </ol>
+        </li>
+    </ol>
+</aside>
+
+    <aside class="sidebar right-sidebar sticky">
+        
+            
+                
+    <section class="widget archives">
+        <div class="widget--toc">
+            <h2 class="widget-title section-title toc-widget-title">目录</h2>
+            <nav class="toc-nav" id="TableOfContents">
+                
+  <ol>
+    <li><a href="#先搞清楚三大线程之外还有什么">先搞清楚&quot;三大线程&quot;之外还有什么</a></li>
+    <li><a href="#一核心audio-io-audio-thread">一、核心：<code>audio-io: audio thread</code></a>
+      <ol>
+        <li><a href="#在哪启动的">在哪启动的</a></li>
+        <li><a href="#主循环长什么样">主循环长什么样</a></li>
+        <li><a href="#一次迭代--处理-1024-帧">一次迭代 = 处理 1024 帧</a></li>
+      </ol>
+    </li>
+    <li><a href="#二6-个-mix--8-个-channel">二、6 个 mix × 8 个 channel</a></li>
+    <li><a href="#三input_and_output-的核心audio_callback">三、<code>input_and_output</code> 的核心：<code>audio_callback</code></a>
+      <ol>
+        <li><a href="#step-1准备阶段">Step 1：准备阶段</a></li>
+        <li><a href="#step-2构建渲染树">Step 2：构建渲染树</a></li>
+        <li><a href="#step-3渲染每个源">Step 3：渲染每个源</a></li>
+        <li><a href="#step-4监控去重消音">Step 4：监控去重消音</a></li>
+        <li><a href="#step-5处理时间戳落后的源">Step 5：处理时间戳落后的源</a></li>
+        <li><a href="#step-6缓冲管理">Step 6：缓冲管理</a></li>
+        <li><a href="#step-7混音">Step 7：混音</a></li>
+        <li><a href="#step-8丢弃已消费数据">Step 8：丢弃已消费数据</a></li>
+      </ol>
+    </li>
+    <li><a href="#四时间戳是怎么玩的">四、时间戳是怎么玩的</a></li>
+    <li><a href="#五平台采集线程一览">五、平台采集线程一览</a></li>
+    <li><a href="#六数据流全景">六、数据流全景</a></li>
+    <li><a href="#七两个容易混淆的概念">七、两个容易混淆的概念</a>
+      <ol>
+        <li><a href="#obs_core_data-不只是音频数据"><code>obs_core_data</code> 不只是音频数据</a></li>
+        <li><a href="#audio_callback-不是采集回调"><code>audio_callback</code> 不是采集回调</a></li>
+      </ol>
+    </li>
+    <li><a href="#小结">小结</a></li>
+  </ol>
+
+            </nav>
+        </div>
+    </section>
+
+
+            
+        
+    </aside>
+
+
+            <main class="main full-width">
+    <article class="main-article">
+    <header class="article-header">
+
+    <div class="article-details">
+    
+    <header class="article-category">
+        
+            
+            
+            
+            <a href="/categories/obs-studio%E6%BA%90%E7%A0%81%E5%AD%A6%E4%B9%A0/" style="background-color: hsl(194, 60%, 84%); color: hsl(194, 60%, 15%);">
+                OBS Studio源码学习
+            </a>
+        
+    </header>
+    
+
+    <div class="article-title-wrapper">
+        <h2 class="article-title">
+            <a href="/p/obs-studio-%E6%BA%90%E7%A0%81%E5%AD%A6%E4%B9%A0%E4%B8%89%E9%9F%B3%E9%A2%91%E7%BA%BF%E7%A8%8B%E6%A2%B3%E7%90%86/">OBS Studio 源码学习（三）：音频线程梳理</a>
+        </h2>
+    
+        
+        <h3 class="article-subtitle">
+            从 audio_output_open 到 input_and_output，完整梳理 OBS Studio 音频子系统：核心音频线程、6 mix × 8 channel 架构、动态缓冲机制、以及多平台采集线程的数据流全景。
+        </h3>
+        
+    </div>
+
+    
+    
+    
+    
+    
+    
+    
+    <footer class="article-meta">
+        
+            <div class="inline-meta">
+                
+                    <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <path stroke="none" d="M0 0h24v24H0z"/>
+  <path d="M11.795 21h-6.795a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v4" />
+  <circle cx="18" cy="18" r="4" />
+  <path d="M15 3v4" />
+  <path d="M7 3v4" />
+  <path d="M3 11h16" />
+  <path d="M18 16.496v1.504l1 1" />
+</svg>
+                    <time class="article-time--published" datetime='2026-07-16T00:00:00Z'>2026-07-16</time>
+                
+
+                
+                    <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <path stroke="none" d="M0 0h24v24H0z"/>
+  <circle cx="12" cy="12" r="9" />
+  <polyline points="12 7 12 12 15 15" />
+</svg>
+
+
+
+                    <time class="article-time--reading">
+                        阅读时长: 8 分钟
+                    </time>
+                
+            </div>
+        
+
+        
+
+        
+    </footer>
+    
+</div>
+
+</header>
+
+    
+    <aside class="article-toc">
+        <details>
+            <summary>
+                <div class="article-toc-title">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-chevron-right"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 6l6 6l-6 6" /></svg>
+                    <span>目录</span>
+                </div>
+            </summary>
+            <nav class="toc-nav">
+                
+  <ol>
+    <li><a href="#先搞清楚三大线程之外还有什么">先搞清楚&quot;三大线程&quot;之外还有什么</a></li>
+    <li><a href="#一核心audio-io-audio-thread">一、核心：<code>audio-io: audio thread</code></a>
+      <ol>
+        <li><a href="#在哪启动的">在哪启动的</a></li>
+        <li><a href="#主循环长什么样">主循环长什么样</a></li>
+        <li><a href="#一次迭代--处理-1024-帧">一次迭代 = 处理 1024 帧</a></li>
+      </ol>
+    </li>
+    <li><a href="#二6-个-mix--8-个-channel">二、6 个 mix × 8 个 channel</a></li>
+    <li><a href="#三input_and_output-的核心audio_callback">三、<code>input_and_output</code> 的核心：<code>audio_callback</code></a>
+      <ol>
+        <li><a href="#step-1准备阶段">Step 1：准备阶段</a></li>
+        <li><a href="#step-2构建渲染树">Step 2：构建渲染树</a></li>
+        <li><a href="#step-3渲染每个源">Step 3：渲染每个源</a></li>
+        <li><a href="#step-4监控去重消音">Step 4：监控去重消音</a></li>
+        <li><a href="#step-5处理时间戳落后的源">Step 5：处理时间戳落后的源</a></li>
+        <li><a href="#step-6缓冲管理">Step 6：缓冲管理</a></li>
+        <li><a href="#step-7混音">Step 7：混音</a></li>
+        <li><a href="#step-8丢弃已消费数据">Step 8：丢弃已消费数据</a></li>
+      </ol>
+    </li>
+    <li><a href="#四时间戳是怎么玩的">四、时间戳是怎么玩的</a></li>
+    <li><a href="#五平台采集线程一览">五、平台采集线程一览</a></li>
+    <li><a href="#六数据流全景">六、数据流全景</a></li>
+    <li><a href="#七两个容易混淆的概念">七、两个容易混淆的概念</a>
+      <ol>
+        <li><a href="#obs_core_data-不只是音频数据"><code>obs_core_data</code> 不只是音频数据</a></li>
+        <li><a href="#audio_callback-不是采集回调"><code>audio_callback</code> 不是采集回调</a></li>
+      </ol>
+    </li>
+    <li><a href="#小结">小结</a></li>
+  </ol>
+
+            </nav>
+        </details>
+    </aside>
+    
+
+    <section class="article-content">
+    
+    
+    <p>前两篇分别梳理了主线程启动流程和图形渲染管线，这篇来看音频子系统。OBS 常说的&quot;三大线程&quot;之外，音频其实也有一套完整的线程体系——一个核心音频处理线程加上各个平台的音频采集线程。这篇文章是我在啃音频相关源码时的学习笔记，保留了&quot;边问边学&quot;的过程感，希望能帮到同样对 OBS 音频架构感兴趣的人。</p>
+<hr>
+<h2 id="先搞清楚三大线程之外还有什么">先搞清楚&quot;三大线程&quot;之外还有什么
+</h2><p>OBS 常说的&quot;三大线程&quot;指的是：</p>
+<ul>
+<li><strong>main 线程</strong> — UI 主线程</li>
+<li><strong>graphics 线程</strong> — <code>obs_graphics_thread</code>，视频渲染</li>
+<li><strong>video encoder 线程</strong> — 视频编码</li>
+</ul>
+<p>但音频也是一个完整的子系统，有自己的一套线程体系。核心是 <strong>1 个核心音频处理线程</strong> + N 个平台相关的<strong>音频采集线程</strong>。</p>
+<hr>
+<h2 id="一核心audio-io-audio-thread">一、核心：<code>audio-io: audio thread</code>
+</h2><p>这是整个音频系统的心脏，全局只有<strong>一个</strong>。</p>
+<h3 id="在哪启动的">在哪启动的
+</h3><div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span><span class="lnt">4
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-fallback" data-lang="fallback"><span class="line"><span class="cl">obs_reset_audio2()                          [libobs/obs.c]
+</span></span><span class="line"><span class="cl">  └─ obs_init_audio()
+</span></span><span class="line"><span class="cl">       └─ audio_output_open(&amp;audio-&gt;audio, ai)  [libobs/media-io/audio-io.c]
+</span></span><span class="line"><span class="cl">            └─ pthread_create(&amp;out-&gt;thread, NULL, audio_thread, out)
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p><code>audio_output_open</code> 不光创建了线程，还初始化了 6 个 mix（混音母线）、注册了核心回调 <code>audio_callback</code>（这个回调每次 Tick 都会被调用）、把 <code>set_audio_thread</code> 任务推入队列用于标记 TLS。</p>
+<h3 id="主循环长什么样">主循环长什么样
+</h3><div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
+</span><span class="lnt">16
+</span><span class="lnt">17
+</span><span class="lnt">18
+</span><span class="lnt">19
+</span><span class="lnt">20
+</span><span class="lnt">21
+</span><span class="lnt">22
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">static</span> <span class="kt">void</span> <span class="o">*</span><span class="nf">audio_thread</span><span class="p">(</span><span class="kt">void</span> <span class="o">*</span><span class="n">param</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">struct</span> <span class="n">audio_output</span> <span class="o">*</span><span class="n">audio</span> <span class="o">=</span> <span class="n">param</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">size_t</span> <span class="n">rate</span> <span class="o">=</span> <span class="n">audio</span><span class="o">-&gt;</span><span class="n">info</span><span class="p">.</span><span class="n">samples_per_sec</span><span class="p">;</span>       <span class="c1">// 比如 48000
+</span></span></span><span class="line"><span class="cl">    <span class="kt">uint64_t</span> <span class="n">samples</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">uint64_t</span> <span class="n">start_time</span> <span class="o">=</span> <span class="nf">os_gettime_ns</span><span class="p">();</span>           <span class="c1">// 启动时的墙上时间，只取一次！
+</span></span></span><span class="line"><span class="cl">    <span class="kt">uint64_t</span> <span class="n">prev_time</span> <span class="o">=</span> <span class="n">start_time</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="nf">os_set_thread_name</span><span class="p">(</span><span class="s">&#34;audio-io: audio thread&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">while</span> <span class="p">(</span><span class="nf">os_event_try</span><span class="p">(</span><span class="n">audio</span><span class="o">-&gt;</span><span class="n">stop_event</span><span class="p">)</span> <span class="o">==</span> <span class="n">EAGAIN</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">samples</span> <span class="o">+=</span> <span class="mi">1024</span><span class="p">;</span>                             <span class="c1">// 每次迭代 +1024 帧
+</span></span></span><span class="line"><span class="cl">        <span class="kt">uint64_t</span> <span class="n">audio_time</span> <span class="o">=</span> <span class="n">start_time</span> <span class="o">+</span> <span class="nf">audio_frames_to_ns</span><span class="p">(</span><span class="n">rate</span><span class="p">,</span> <span class="n">samples</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// 从 start_time 按采样点数算绝对时间，48kHz 下每次间隔 21.33ms
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="nf">os_sleepto_ns_fast</span><span class="p">(</span><span class="n">audio_time</span><span class="p">);</span>              <span class="c1">// 睡到那个绝对时刻
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="nf">input_and_output</span><span class="p">(</span><span class="n">audio</span><span class="p">,</span> <span class="n">audio_time</span><span class="p">,</span> <span class="n">prev_time</span><span class="p">);</span>  <span class="c1">// 干活
+</span></span></span><span class="line"><span class="cl">        <span class="n">prev_time</span> <span class="o">=</span> <span class="n">audio_time</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="nb">NULL</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p><strong>关键点</strong>：<code>audio_time</code> 始终从固定的 <code>start_time</code> 按采样点累积计算，而不是&quot;当前时间 + 偏移&quot;。所以即使某次迭代处理慢了，下一次的目标时刻不会被推迟——线程会少睡甚至不睡来追赶，不会累积漂移。</p>
+<h3 id="一次迭代--处理-1024-帧">一次迭代 = 处理 1024 帧
+</h3><p>一次迭代就是一个&quot;音频 Tick&quot;。48kHz 下每 Tick 约 21.33ms，每秒约 47 次。</p>
+<p>每次迭代调用的 <code>input_and_output</code> 做了五件事：</p>
+<ol>
+<li><strong>扫描活跃的 mix</strong>：6 个 mix 中哪些有 consumer（编码器/监控挂载在上面）</li>
+<li><strong>清零 mix buffer</strong>：为后续累加混音做准备</li>
+<li><strong>调用 <code>audio_callback</code></strong>：从各个 source 收集数据、渲染、混音</li>
+<li><strong>钳位</strong>：float 样本限制在 [-1.0, 1.0]，同时保留 unclamped 副本</li>
+<li><strong>分发</strong>：把混好的数据通过 <code>do_audio_output</code> 发给编码器和监控</li>
+</ol>
+<hr>
+<h2 id="二6-个-mix--8-个-channel">二、6 个 mix × 8 个 channel
+</h2><p>这两个数字经常同时出现，容易搞混。它们是两个正交的维度：</p>
+<ul>
+<li><strong>6 个 mix</strong> = 6 条独立的混音母线（<strong>纵轴</strong>），对应 OBS 高级输出模式下的 6 条独立音轨。比如 track1 推流、track2 录完整混音、track3 只录麦克风……</li>
+<li><strong>8 个 channel</strong> = 每条母线最多 8 个声道（<strong>横轴</strong>），对应 7.1 环绕声（FL/FR/FC/LFE/RL/RR/SL/SR）</li>
+</ul>
+<p>每个 source 通过 <code>audio_mixers</code> 位掩码决定&quot;我去哪几条 mix&quot;。绝大多数场景只需要立体声（2 声道），但数组空间按最大值预留。</p>
+<hr>
+<h2 id="三input_and_output-的核心audio_callback">三、<code>input_and_output</code> 的核心：<code>audio_callback</code>
+</h2><p><code>audio_callback</code> 是 <code>input_and_output</code> 中调用的核心渲染回调。它的签名：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span><span class="lnt">4
+</span><span class="lnt">5
+</span><span class="lnt">6
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="kt">bool</span> <span class="nf">audio_callback</span><span class="p">(</span><span class="kt">void</span> <span class="o">*</span><span class="n">param</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                    <span class="kt">uint64_t</span> <span class="n">start_ts_in</span><span class="p">,</span>    <span class="c1">// 本次 Tick 起始时间戳
+</span></span></span><span class="line"><span class="cl">                    <span class="kt">uint64_t</span> <span class="n">end_ts_in</span><span class="p">,</span>      <span class="c1">// 本次 Tick 结束时间戳
+</span></span></span><span class="line"><span class="cl">                    <span class="kt">uint64_t</span> <span class="o">*</span><span class="n">out_ts</span><span class="p">,</span>        <span class="c1">// [输出] 实际使用的时间戳
+</span></span></span><span class="line"><span class="cl">                    <span class="kt">uint32_t</span> <span class="n">mixers</span><span class="p">,</span>         <span class="c1">// 位掩码：哪些 mix 活跃
+</span></span></span><span class="line"><span class="cl">                    <span class="k">struct</span> <span class="n">audio_output_data</span> <span class="o">*</span><span class="n">mixes</span><span class="p">)</span>  <span class="c1">// [输入+输出] 待填充的 mix buffer
+</span></span></span></code></pre></td></tr></table>
+</div>
+</div><p>它的工作分八步：</p>
+<h3 id="step-1准备阶段">Step 1：准备阶段
+</h3><div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">struct</span> <span class="n">ts_info</span> <span class="n">ts</span> <span class="o">=</span> <span class="p">{</span><span class="n">start_ts_in</span><span class="p">,</span> <span class="n">end_ts_in</span><span class="p">};</span>   <span class="c1">// 本次 Tick 的时间窗口
+</span></span></span><span class="line"><span class="cl"><span class="nf">deque_push_back</span><span class="p">(</span><span class="o">&amp;</span><span class="n">buffered_timestamps</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">ts</span><span class="p">);</span>       <span class="c1">// 推入队尾
+</span></span></span><span class="line"><span class="cl"><span class="nf">deque_peek_front</span><span class="p">(</span><span class="o">&amp;</span><span class="n">buffered_timestamps</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">ts</span><span class="p">);</span>      <span class="c1">// 从队首取出——可能不一样！
+</span></span></span></code></pre></td></tr></table>
+</div>
+</div><p><code>buffered_timestamps</code> 是一个双端队列。正常无缓冲时，推入再取出的是同一个。但如果之前有缓冲积累（源时间戳落后），队列里已经插入了更早的时间区间，从队首取出的 <code>ts</code> 就被&quot;拉回&quot;到了更早的时间。</p>
+<h3 id="step-2构建渲染树">Step 2：构建渲染树
+</h3><p>遍历所有 Scene/View 的 channel 以及全局音源（不在任何 Scene 里的纯音频源），构建两个列表：</p>
+<ul>
+<li><strong><code>render_order</code></strong>：音频源的有序渲染列表，保证子源在父源之前渲染</li>
+<li><strong><code>root_nodes</code></strong>：Top-level 源列表，只有它们直接参与混音（避免子源被重复累加）</li>
+</ul>
+<h3 id="step-3渲染每个源">Step 3：渲染每个源
+</h3><p>对 <code>render_order</code> 中每个 source 调用 <code>obs_source_audio_render()</code>。这里区分两种源：</p>
+<p><strong>普通采集源</strong>（麦克风、桌面音频）：从 <code>audio_input_buf</code>（deque）取 1024 帧 → 输出到 <code>audio_output_buf</code></p>
+<p><strong>复合源</strong>（Scene、Group）：通过 <code>audio_submix</code> 累加所有子源的 <code>audio_output_buf</code> → 再走一遍 <code>obs_source_output_audio</code> → 这会经过复合源<strong>自己身上挂的 filter 链</strong>。</p>
+<p>也就是说子源的 filter 处理单个音源（去噪、压缩），复合源的 filter 处理整体（总线压缩、总限幅），两层独立的 filter 链。</p>
+<h3 id="step-4监控去重消音">Step 4：监控去重消音
+</h3><p>当用户既做了音频监控，又添加了&quot;音频输出采集&quot;源，且它们指向同一个设备时，会产生回声。<code>should_silence_monitored_source</code> 检测这种情况，对重复采集的源调用 <code>clear_audio_output_buf</code> 清零——回声被消除了，但监控本身不受影响。</p>
+<h3 id="step-5处理时间戳落后的源">Step 5：处理时间戳落后的源
+</h3><div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span><span class="lnt">4
+</span><span class="lnt">5
+</span><span class="lnt">6
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="nf">audio_buffering_maxed</span><span class="p">(</span><span class="n">audio</span><span class="p">)</span>           <span class="c1">// 缓冲已满
+</span></span></span><span class="line"><span class="cl">    <span class="o">&amp;&amp;</span> <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_ts</span> <span class="o">!=</span> <span class="mi">0</span>               <span class="c1">// 源曾经产过数据
+</span></span></span><span class="line"><span class="cl">    <span class="o">&amp;&amp;</span> <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_ts</span> <span class="o">&lt;</span> <span class="n">ts</span><span class="p">.</span><span class="n">start</span><span class="p">)</span> <span class="p">{</span>      <span class="c1">// 源落后于混音窗口
+</span></span></span><span class="line"><span class="cl">    <span class="c1">// 采集源：ignore_audio → 从 deque 弹掉落后帧
+</span></span></span><span class="line"><span class="cl">    <span class="c1">// 渲染型音源（媒体文件等）：audio_pending = true → 跳过本次混音
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>为什么渲染型音源不能丢数据？因为媒体源的数据不是在 deque 里的——它是每次 Tick 调用 <code>audio_render</code> 回调<strong>当场生成</strong>的。丢音频帧会打乱 A/V 同步（声音和画面对不上），而且外部没法用 <code>deque_pop_front</code> 干预内部解码状态。只能标记 pending 等它自己追上来。</p>
+<h3 id="step-6缓冲管理">Step 6：缓冲管理
+</h3><p>检查是否还有源的时间戳落后。如果缓冲未满，调用 <code>add_audio_buffering</code> 把 <code>ts</code> 往前拉。注意：<strong>本次加的缓冲要到下一次 Tick 的 peek 才生效</strong>。</p>
+<h3 id="step-7混音">Step 7：混音
+</h3><p>只对 <code>root_nodes</code> 中不在 pending 状态的源做 <code>mix_audio</code>——把 <code>audio_output_buf</code> 逐声道累加到 mix buffer。</p>
+<h3 id="step-8丢弃已消费数据">Step 8：丢弃已消费数据
+</h3><p>遍历所有源，弹出 input buffer 中已被混音覆盖的帧，推进 <code>source-&gt;audio_ts</code>，释放缓冲空间。</p>
+<hr>
+<h2 id="四时间戳是怎么玩的">四、时间戳是怎么玩的
+</h2><p><code>source-&gt;audio_ts</code> 表示&quot;这个源生产到了哪个时间点&quot;，<code>ts.start</code> 表示&quot;混音窗口从哪个时间点开始需要数据&quot;。</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span><span class="lnt">4
+</span><span class="lnt">5
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-fallback" data-lang="fallback"><span class="line"><span class="cl">正常:  source-&gt;audio_ts &gt;= ts.start  → 数据够，正常渲染
+</span></span><span class="line"><span class="cl">落后:  source-&gt;audio_ts &lt;  ts.start  → 数据不够
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  缓冲未满 → add_audio_buffering 把 ts 往回拉 → 等源追上
+</span></span><span class="line"><span class="cl">  缓冲已满 → ignore_audio 强行丢数据 / pending 等待
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>这就是 OBS 动态缓冲的核心逻辑——先用延迟换稳定性，延迟到了上限再放弃。</p>
+<hr>
+<h2 id="五平台采集线程一览">五、平台采集线程一览
+</h2><p>这些线程从操作系统音频 API 读取 PCM 数据，通过 <code>obs_source_output_audio()</code> 推入 source 的 <code>audio_input_buf</code>（deque），是<strong>生产者</strong>。</p>
+<div class="table-wrapper"><table>
+	<thead>
+			<tr>
+					<th>平台</th>
+					<th>采集线程</th>
+					<th>数据来源</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td>Windows</td>
+					<td><code>win-wasapi: capture thread</code> (RTWQ 不可用时)</td>
+					<td>WASAPI IAudioCaptureClient</td>
+			</tr>
+			<tr>
+					<td>Windows</td>
+					<td>RTWQ 系统线程池 (RTWQ 可用时，Win10 1703+)</td>
+					<td>同上</td>
+			</tr>
+			<tr>
+					<td>Windows</td>
+					<td><code>win-wasapi: reconnect thread</code></td>
+					<td>设备重连协调</td>
+			</tr>
+			<tr>
+					<td>macOS</td>
+					<td>CoreAudio 内部 I/O 线程 (input_callback)</td>
+					<td>AudioUnit</td>
+			</tr>
+			<tr>
+					<td>macOS</td>
+					<td><code>coreaudio: reconnect thread</code> (pthread)</td>
+					<td>设备重连重试</td>
+			</tr>
+			<tr>
+					<td>Linux</td>
+					<td>ALSA listen 线程 (pthread)</td>
+					<td>snd_pcm_readi</td>
+			</tr>
+			<tr>
+					<td>Linux</td>
+					<td>ALSA reopen 线程 (pthread)</td>
+					<td>设备重打开</td>
+			</tr>
+			<tr>
+					<td>Linux</td>
+					<td>OSS reader 线程 (pthread)</td>
+					<td>/dev/dsp</td>
+			</tr>
+			<tr>
+					<td>Linux</td>
+					<td>PulseAudio threaded mainloop (PA 内部)</td>
+					<td>pa_stream_read</td>
+			</tr>
+			<tr>
+					<td>OpenBSD</td>
+					<td>sndio 线程 (pthread, detached)</td>
+					<td>sio_read</td>
+			</tr>
+	</tbody>
+</table></div>
+<p>所有采集线程最终都调用同一个函数：<code>obs_source_output_audio()</code>。这就是 OBS 音频子系统的&quot;多生产者—单消费者&quot;架构：N 个采集线程 push → 每个 source 一个 deque → 1 个 audio-io 线程 pop、混音、分发。</p>
+<hr>
+<h2 id="六数据流全景">六、数据流全景
+</h2><p>把前面的东西串起来，整个音频数据的流动路径如下：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
+</span><span class="lnt">16
+</span><span class="lnt">17
+</span><span class="lnt">18
+</span><span class="lnt">19
+</span><span class="lnt">20
+</span><span class="lnt">21
+</span><span class="lnt">22
+</span><span class="lnt">23
+</span><span class="lnt">24
+</span><span class="lnt">25
+</span><span class="lnt">26
+</span><span class="lnt">27
+</span><span class="lnt">28
+</span><span class="lnt">29
+</span><span class="lnt">30
+</span><span class="lnt">31
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-fallback" data-lang="fallback"><span class="line"><span class="cl">┌──────────────────────────────────────────────────┐
+</span></span><span class="line"><span class="cl">│  采集线程（生产者）                                  │
+</span></span><span class="line"><span class="cl">│                                                    │
+</span></span><span class="line"><span class="cl">│  WASAPI / CoreAudio / ALSA / PulseAudio / OSS     │
+</span></span><span class="line"><span class="cl">│    │                                               │
+</span></span><span class="line"><span class="cl">│    │ obs_source_output_audio(source, &amp;data)       │
+</span></span><span class="line"><span class="cl">│    │   → process_audio (重采样+balance+downmix)   │
+</span></span><span class="line"><span class="cl">│    │   → filter_async_audio (source 自己的 filter) │
+</span></span><span class="line"><span class="cl">│    │   → deque_push_back(audio_input_buf[ch])     │
+</span></span><span class="line"><span class="cl">│    ▼                                               │
+</span></span><span class="line"><span class="cl">│  source-&gt;audio_input_buf[0..7] (环形缓冲)          │
+</span></span><span class="line"><span class="cl">└────────────────────┬─────────────────────────────┘
+</span></span><span class="line"><span class="cl">                     │
+</span></span><span class="line"><span class="cl">                     ▼
+</span></span><span class="line"><span class="cl">┌──────────────────────────────────────────────────┐
+</span></span><span class="line"><span class="cl">│  audio-io 线程（消费者，每 21.33ms 一次 Tick）      │
+</span></span><span class="line"><span class="cl">│                                                    │
+</span></span><span class="line"><span class="cl">│  input_and_output()                                │
+</span></span><span class="line"><span class="cl">│    ├─ 扫描活跃 mix                                 │
+</span></span><span class="line"><span class="cl">│    ├─ 清零 mix buffer                              │
+</span></span><span class="line"><span class="cl">│    ├─ audio_callback()                             │
+</span></span><span class="line"><span class="cl">│    │    ├─ 构建 render_order / root_nodes          │
+</span></span><span class="line"><span class="cl">│    │    ├─ obs_source_audio_render (pop deque)    │
+</span></span><span class="line"><span class="cl">│    │    ├─ 缓冲管理                                │
+</span></span><span class="line"><span class="cl">│    │    ├─ mix_audio (累加到 mix buffer)           │
+</span></span><span class="line"><span class="cl">│    │    └─ discard_audio (释放已消费数据)          │
+</span></span><span class="line"><span class="cl">│    ├─ clamp [-1.0, 1.0]                            │
+</span></span><span class="line"><span class="cl">│    └─ do_audio_output()                            │
+</span></span><span class="line"><span class="cl">│         ├─ receive_audio (编码器)                   │
+</span></span><span class="line"><span class="cl">│         └─ on_audio_playback (监控)                 │
+</span></span><span class="line"><span class="cl">└──────────────────────────────────────────────────┘
+</span></span></code></pre></td></tr></table>
+</div>
+</div><hr>
+<h2 id="七两个容易混淆的概念">七、两个容易混淆的概念
+</h2><h3 id="obs_core_data-不只是音频数据"><code>obs_core_data</code> 不只是音频数据
+</h3><p><code>audio_callback</code> 第一行：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">struct</span> <span class="n">obs_core_data</span> <span class="o">*</span><span class="n">data</span> <span class="o">=</span> <span class="o">&amp;</span><span class="n">obs</span><span class="o">-&gt;</span><span class="n">data</span><span class="p">;</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>这个变量名 <code>data</code> 很抽象。实际上 <code>obs_core_data</code> 是 OBS 的<strong>全局对象注册中心</strong>——所有 source、output、encoder、display、service 的链表头都在里面。<code>audio_callback</code> 只用到其中两个字段：<code>first_audio_source</code>（全局音频源链表）和 <code>audio_sources_mutex</code>（保护它的锁）。其他的跟音频一点关系都没有。</p>
+<h3 id="audio_callback-不是采集回调"><code>audio_callback</code> 不是采集回调
+</h3><p>它是<strong>混音渲染</strong>回调，不是采集回调。采集回调是各平台自己的（WASAPI <code>CaptureThread</code>、CoreAudio <code>input_callback</code> 等），它们负责往 deque 里 push 数据。<code>audio_callback</code> 是 audio-io 线程每 Tick 调用一次，负责从 deque 里 pop 数据、混音、分发。</p>
+<hr>
+<h2 id="小结">小结
+</h2><p>读音频子系统的这几天，最大的感受是 OBS 的音频架构和视频管线在思路上高度对称——都有独立的核心时钟线程、都有按需消费的机制、都用 deque 做缓冲解耦。几个关键设计值得记住：</p>
+<ul>
+<li><strong>一个核心时钟</strong>（audio-io 线程，固定 1024 帧节奏，永不漂移）</li>
+<li><strong>多个生产者</strong>（各平台采集线程，用 <code>obs_source_output_audio</code> 统一入口推数据）</li>
+<li><strong>每源一个 deque</strong> 做缓冲解耦</li>
+<li><strong>6 个 mix</strong> 支持多轨输出</li>
+<li><strong>动态缓冲</strong>用延迟换稳定性（缓冲未满拉回 ts，缓冲满后才丢数据）</li>
+<li><strong>Filter 链</strong>在 source 层面独立（单一源和复合源各管各的 filter 层）</li>
+</ul>
+<p>理解了这些，OBS 音频的骨架也就清楚了。</p>
+<hr>
+<p>学习过程中参考了 OBS Studio 官方源码仓库，感谢开源社区。如有理解偏差，欢迎指正交流。</p>
+
+</section>
+
+
+    <footer class="article-meta article-footer">
+    
+    <section class="article-tags">
+        
+            <a href="/tags/obs/">OBS</a>
+        
+            <a href="/tags/%E6%BA%90%E7%A0%81%E5%AD%A6%E4%B9%A0/">源码学习</a>
+        
+            <a href="/tags/c&#43;&#43;/">C&#43;&#43;</a>
+        
+            <a href="/tags/obs-studio/">Obs-Studio</a>
+        
+    </section>
+
+
+    </footer>
+
+
+    
+</article>
+
+    
+
+    
+
+<aside>
+    <h2 class="section-title">相关文章</h2>
+    <div class="subsection-list">
+        <div class="article-list--tile">
+            
+                
+<article class="">
+    <a href="/p/obs-studio-%E6%BA%90%E7%A0%81%E5%AD%A6%E4%B9%A0%E4%BA%8C%E5%9B%BE%E5%BD%A2%E6%B8%B2%E6%9F%93%E7%BA%BF%E7%A8%8B%E6%A2%B3%E7%90%86/">
+        
+
+        <div class="article-details">
+            <h2 class="article-title">OBS Studio 源码学习（二）：图形渲染线程梳理</h2>
+        </div>
+    </a>
+</article>
+            
+                
+<article class="">
+    <a href="/p/obs-studio-%E6%BA%90%E7%A0%81%E5%AD%A6%E4%B9%A0%E4%B8%80%E4%B8%BB%E7%BA%BF%E7%A8%8B%E5%90%AF%E5%8A%A8%E6%B5%81%E7%A8%8B%E6%A2%B3%E7%90%86/">
+        
+
+        <div class="article-details">
+            <h2 class="article-title">OBS Studio 源码学习（一）：主线程启动流程梳理</h2>
+        </div>
+    </a>
+</article>
+            
+        </div>
+    </div>
+</aside>
+
+     
+    
+        
+
+
+    
+
+    <footer class="site-footer">
+    <section class="copyright">
+        &copy; 
+        
+        2026 灰色不是粉色的个人博客
+    </section>
+    
+    <section class="powerby">
+        使用 <a href="https://gohugo.io/" target="_blank" rel="noopener">Hugo</a> 构建 <br />
+        主题 <b><a href="https://github.com/CaiJimmy/hugo-theme-stack" target="_blank" rel="noopener" data-version="4.0.3">Stack</a></b> 由 <a href="https://jimmycai.com" target="_blank" rel="noopener">Jimmy</a> 设计
+    </section>
+</footer>
+
+
+    
+
+
+
+<script type="module">
+    import gallery from '\/ts\/gallery.js';
+
+    const articleContent = document.querySelector('.article-content');
+    const shouldLoad = articleContent && (articleContent.querySelectorAll('figure').length > 0 || articleContent.querySelectorAll('img.gallery-image').length > 0);
+    
+    if (shouldLoad) {
+        gallery(articleContent);
+
+        const PhotoSwipeLightbox = (await import("https:\/\/cdn.jsdelivr.net\/npm\/photoswipe@5.4.4\/dist\/photoswipe-lightbox.esm.min.js")).default;
+        const styleHref = "https:\/\/cdn.jsdelivr.net\/npm\/photoswipe@5.4.4\/dist\/photoswipe.css";
+
+        const styleTag = document.createElement('link');
+        styleTag.rel = 'stylesheet';
+        styleTag.href = styleHref;
+        document.head.appendChild(styleTag);
+
+        const lightbox = new PhotoSwipeLightbox({
+            gallerySelector: '.article-content',
+            childSelector: 'figure a.image-link',
+            pswpModule: () => import("https:\/\/cdn.jsdelivr.net\/npm\/photoswipe@5.4.4\/dist\/photoswipe.esm.min.js")
+        });
+        lightbox.init();
+    }
+</script>
+
+    
+
+            </main>
+        </div>
+        
+<script type="text/javascript" src="/ts/main.9ca38009e9dcd41277c6a2a393142d89cde153ee6eb470eda18fef3d3026f0b9.js" defer></script>
+<style>
+  body {
+    background: url(http://localhost:1313/background/sakura_PC.jpg) no-repeat center top;
+    background-size: cover;
+    background-attachment: fixed;
+  }
+</style>
+
+
+<script src=http://localhost:1313/background/sakura.js></script>
+
+
+    </body>
+</html>
