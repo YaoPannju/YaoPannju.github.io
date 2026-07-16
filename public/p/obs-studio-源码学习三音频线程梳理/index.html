@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="zh" dir="ltr">
     <head><script src="/livereload.js?mindelay=10&amp;v=2&amp;port=1313&amp;path=livereload" data-no-instant defer></script><meta charset='utf-8'>
-<meta name='viewport' content='width=device-width, initial-scale=1'><meta name='description' content="从 audio_output_open 到 input_and_output，完整梳理 OBS Studio 音频子系统：核心音频线程、6 mix × 8 channel 架构、动态缓冲机制、以及多平台采集线程的数据流全景。">
+<meta name='viewport' content='width=device-width, initial-scale=1'><meta name='description' content="从 audio_output_open 到 input_and_output，完整梳理 OBS 音频子系统：核心线程主循环、音频树构建、obs_source_output_audio 全流程、动态缓冲机制、以及多平台采集线程的数据流全景。">
 <title>OBS Studio 源码学习（三）：音频线程梳理</title>
 
 
@@ -13,12 +13,12 @@
 
 
 <link rel="stylesheet" href="/scss/style.min.59c5eb617b2b83358d0baf163162325d5249a2be44239b430beb29a87c1ddbe4.css"><meta property='og:title' content="OBS Studio 源码学习（三）：音频线程梳理">
-<meta property='og:description' content="从 audio_output_open 到 input_and_output，完整梳理 OBS Studio 音频子系统：核心音频线程、6 mix × 8 channel 架构、动态缓冲机制、以及多平台采集线程的数据流全景。">
+<meta property='og:description' content="从 audio_output_open 到 input_and_output，完整梳理 OBS 音频子系统：核心线程主循环、音频树构建、obs_source_output_audio 全流程、动态缓冲机制、以及多平台采集线程的数据流全景。">
 <meta property='og:url' content='http://localhost:1313/p/obs-studio-%E6%BA%90%E7%A0%81%E5%AD%A6%E4%B9%A0%E4%B8%89%E9%9F%B3%E9%A2%91%E7%BA%BF%E7%A8%8B%E6%A2%B3%E7%90%86/'>
 <meta property='og:site_name' content='灰色不是粉色的个人博客'>
 <meta property='og:type' content='article'><meta property='article:section' content='Post' /><meta property='article:tag' content='OBS' /><meta property='article:tag' content='源码学习' /><meta property='article:tag' content='C&#43;&#43;' /><meta property='article:tag' content='obs-studio' /><meta property='article:published_time' content='2026-07-16T00:00:00&#43;00:00'/><meta property='article:modified_time' content='2026-07-16T00:00:00&#43;00:00'/>
 <meta name="twitter:title" content="OBS Studio 源码学习（三）：音频线程梳理">
-<meta name="twitter:description" content="从 audio_output_open 到 input_and_output，完整梳理 OBS Studio 音频子系统：核心音频线程、6 mix × 8 channel 架构、动态缓冲机制、以及多平台采集线程的数据流全景。">
+<meta name="twitter:description" content="从 audio_output_open 到 input_and_output，完整梳理 OBS 音频子系统：核心线程主循环、音频树构建、obs_source_output_audio 全流程、动态缓冲机制、以及多平台采集线程的数据流全景。">
 <style>
     #waifu {
         left: auto !important;
@@ -389,36 +389,52 @@
             <nav class="toc-nav" id="TableOfContents">
                 
   <ol>
-    <li><a href="#先搞清楚三大线程之外还有什么">先搞清楚&quot;三大线程&quot;之外还有什么</a></li>
-    <li><a href="#一核心audio-io-audio-thread">一、核心：<code>audio-io: audio thread</code></a>
+    <li><a href="#一核心线程的启动和主循环">一、核心线程的启动和主循环</a>
       <ol>
-        <li><a href="#在哪启动的">在哪启动的</a></li>
-        <li><a href="#主循环长什么样">主循环长什么样</a></li>
-        <li><a href="#一次迭代--处理-1024-帧">一次迭代 = 处理 1024 帧</a></li>
+        <li><a href="#11-启动链路">1.1 启动链路</a></li>
+        <li><a href="#12-主循环">1.2 主循环</a></li>
+        <li><a href="#13-input_and_output-逐行解析">1.3 <code>input_and_output</code> 逐行解析</a></li>
       </ol>
     </li>
-    <li><a href="#二6-个-mix--8-个-channel">二、6 个 mix × 8 个 channel</a></li>
-    <li><a href="#三input_and_output-的核心audio_callback">三、<code>input_and_output</code> 的核心：<code>audio_callback</code></a>
+    <li><a href="#二音频树是怎么构建的">二、音频树是怎么构建的</a>
       <ol>
-        <li><a href="#step-1准备阶段">Step 1：准备阶段</a></li>
-        <li><a href="#step-2构建渲染树">Step 2：构建渲染树</a></li>
-        <li><a href="#step-3渲染每个源">Step 3：渲染每个源</a></li>
-        <li><a href="#step-4监控去重消音">Step 4：监控去重消音</a></li>
-        <li><a href="#step-5处理时间戳落后的源">Step 5：处理时间戳落后的源</a></li>
-        <li><a href="#step-6缓冲管理">Step 6：缓冲管理</a></li>
-        <li><a href="#step-7混音">Step 7：混音</a></li>
-        <li><a href="#step-8丢弃已消费数据">Step 8：丢弃已消费数据</a></li>
+        <li><a href="#21-推入函数">2.1 推入函数</a></li>
+        <li><a href="#22-构建过程">2.2 构建过程</a></li>
+        <li><a href="#23-举例说明">2.3 举例说明</a></li>
       </ol>
     </li>
-    <li><a href="#四时间戳是怎么玩的">四、时间戳是怎么玩的</a></li>
-    <li><a href="#五平台采集线程一览">五、平台采集线程一览</a></li>
-    <li><a href="#六数据流全景">六、数据流全景</a></li>
-    <li><a href="#七两个容易混淆的概念">七、两个容易混淆的概念</a>
+    <li><a href="#三从采集到入队obs_source_output_audio-全流程">三、从采集到入队：<code>obs_source_output_audio</code> 全流程</a>
       <ol>
-        <li><a href="#obs_core_data-不只是音频数据"><code>obs_core_data</code> 不只是音频数据</a></li>
-        <li><a href="#audio_callback-不是采集回调"><code>audio_callback</code> 不是采集回调</a></li>
+        <li><a href="#31-process_audio--格式统一">3.1 <code>process_audio</code> —— 格式统一</a></li>
+        <li><a href="#32-filter_async_audio--filter-链">3.2 <code>filter_async_audio</code> —— filter 链</a></li>
+        <li><a href="#33-source_output_audio_data--入-deque">3.3 <code>source_output_audio_data</code> —— 入 deque</a></li>
       </ol>
     </li>
+    <li><a href="#四从-deque-取出渲染obs_source_audio_render-全流程">四、从 deque 取出渲染：<code>obs_source_audio_render</code> 全流程</a>
+      <ol>
+        <li><a href="#41-路径-1custom_audio_render--渲染型音源媒体文件等">4.1 路径 1：<code>custom_audio_render</code> —— 渲染型音源（媒体文件等）</a></li>
+        <li><a href="#42-路径-2audio_submix--复合源累加子源">4.2 路径 2：<code>audio_submix</code> —— 复合源累加子源</a></li>
+        <li><a href="#43-路径-3process_audio_source_tick--从-deque-取数据输出">4.3 路径 3：<code>process_audio_source_tick</code> —— 从 deque 取数据输出</a></li>
+      </ol>
+    </li>
+    <li><a href="#五缓冲管理时间戳怎么玩">五、缓冲管理：时间戳怎么玩</a>
+      <ol>
+        <li><a href="#51-核心概念">5.1 核心概念</a></li>
+        <li><a href="#52-动态缓冲add_audio_buffering">5.2 动态缓冲：<code>add_audio_buffering</code></a></li>
+        <li><a href="#53-缓冲满了怎么办ignore_audio">5.3 缓冲满了怎么办：<code>ignore_audio</code></a></li>
+        <li><a href="#54-discard_audio--消费已用数据">5.4 <code>discard_audio</code> —— 消费已用数据</a></li>
+      </ol>
+    </li>
+    <li><a href="#六监控去重消音">六、监控去重消音</a></li>
+    <li><a href="#七平台采集线程细节">七、平台采集线程细节</a>
+      <ol>
+        <li><a href="#71-windows-wasapi">7.1 Windows WASAPI</a></li>
+        <li><a href="#72-macos-coreaudio">7.2 macOS CoreAudio</a></li>
+        <li><a href="#73-linux-pulseaudio">7.3 Linux PulseAudio</a></li>
+      </ol>
+    </li>
+    <li><a href="#八完整数据流从采集到编码监控">八、完整数据流（从采集到编码/监控）</a></li>
+    <li><a href="#九一些容易踩的命名坑">九、一些容易踩的命名坑</a></li>
     <li><a href="#小结">小结</a></li>
   </ol>
 
@@ -457,7 +473,7 @@
     
         
         <h3 class="article-subtitle">
-            从 audio_output_open 到 input_and_output，完整梳理 OBS Studio 音频子系统：核心音频线程、6 mix × 8 channel 架构、动态缓冲机制、以及多平台采集线程的数据流全景。
+            从 audio_output_open 到 input_and_output，完整梳理 OBS 音频子系统：核心线程主循环、音频树构建、obs_source_output_audio 全流程、动态缓冲机制、以及多平台采集线程的数据流全景。
         </h3>
         
     </div>
@@ -495,7 +511,7 @@
 
 
                     <time class="article-time--reading">
-                        阅读时长: 8 分钟
+                        阅读时长: 19 分钟
                     </time>
                 
             </div>
@@ -522,36 +538,52 @@
             <nav class="toc-nav">
                 
   <ol>
-    <li><a href="#先搞清楚三大线程之外还有什么">先搞清楚&quot;三大线程&quot;之外还有什么</a></li>
-    <li><a href="#一核心audio-io-audio-thread">一、核心：<code>audio-io: audio thread</code></a>
+    <li><a href="#一核心线程的启动和主循环">一、核心线程的启动和主循环</a>
       <ol>
-        <li><a href="#在哪启动的">在哪启动的</a></li>
-        <li><a href="#主循环长什么样">主循环长什么样</a></li>
-        <li><a href="#一次迭代--处理-1024-帧">一次迭代 = 处理 1024 帧</a></li>
+        <li><a href="#11-启动链路">1.1 启动链路</a></li>
+        <li><a href="#12-主循环">1.2 主循环</a></li>
+        <li><a href="#13-input_and_output-逐行解析">1.3 <code>input_and_output</code> 逐行解析</a></li>
       </ol>
     </li>
-    <li><a href="#二6-个-mix--8-个-channel">二、6 个 mix × 8 个 channel</a></li>
-    <li><a href="#三input_and_output-的核心audio_callback">三、<code>input_and_output</code> 的核心：<code>audio_callback</code></a>
+    <li><a href="#二音频树是怎么构建的">二、音频树是怎么构建的</a>
       <ol>
-        <li><a href="#step-1准备阶段">Step 1：准备阶段</a></li>
-        <li><a href="#step-2构建渲染树">Step 2：构建渲染树</a></li>
-        <li><a href="#step-3渲染每个源">Step 3：渲染每个源</a></li>
-        <li><a href="#step-4监控去重消音">Step 4：监控去重消音</a></li>
-        <li><a href="#step-5处理时间戳落后的源">Step 5：处理时间戳落后的源</a></li>
-        <li><a href="#step-6缓冲管理">Step 6：缓冲管理</a></li>
-        <li><a href="#step-7混音">Step 7：混音</a></li>
-        <li><a href="#step-8丢弃已消费数据">Step 8：丢弃已消费数据</a></li>
+        <li><a href="#21-推入函数">2.1 推入函数</a></li>
+        <li><a href="#22-构建过程">2.2 构建过程</a></li>
+        <li><a href="#23-举例说明">2.3 举例说明</a></li>
       </ol>
     </li>
-    <li><a href="#四时间戳是怎么玩的">四、时间戳是怎么玩的</a></li>
-    <li><a href="#五平台采集线程一览">五、平台采集线程一览</a></li>
-    <li><a href="#六数据流全景">六、数据流全景</a></li>
-    <li><a href="#七两个容易混淆的概念">七、两个容易混淆的概念</a>
+    <li><a href="#三从采集到入队obs_source_output_audio-全流程">三、从采集到入队：<code>obs_source_output_audio</code> 全流程</a>
       <ol>
-        <li><a href="#obs_core_data-不只是音频数据"><code>obs_core_data</code> 不只是音频数据</a></li>
-        <li><a href="#audio_callback-不是采集回调"><code>audio_callback</code> 不是采集回调</a></li>
+        <li><a href="#31-process_audio--格式统一">3.1 <code>process_audio</code> —— 格式统一</a></li>
+        <li><a href="#32-filter_async_audio--filter-链">3.2 <code>filter_async_audio</code> —— filter 链</a></li>
+        <li><a href="#33-source_output_audio_data--入-deque">3.3 <code>source_output_audio_data</code> —— 入 deque</a></li>
       </ol>
     </li>
+    <li><a href="#四从-deque-取出渲染obs_source_audio_render-全流程">四、从 deque 取出渲染：<code>obs_source_audio_render</code> 全流程</a>
+      <ol>
+        <li><a href="#41-路径-1custom_audio_render--渲染型音源媒体文件等">4.1 路径 1：<code>custom_audio_render</code> —— 渲染型音源（媒体文件等）</a></li>
+        <li><a href="#42-路径-2audio_submix--复合源累加子源">4.2 路径 2：<code>audio_submix</code> —— 复合源累加子源</a></li>
+        <li><a href="#43-路径-3process_audio_source_tick--从-deque-取数据输出">4.3 路径 3：<code>process_audio_source_tick</code> —— 从 deque 取数据输出</a></li>
+      </ol>
+    </li>
+    <li><a href="#五缓冲管理时间戳怎么玩">五、缓冲管理：时间戳怎么玩</a>
+      <ol>
+        <li><a href="#51-核心概念">5.1 核心概念</a></li>
+        <li><a href="#52-动态缓冲add_audio_buffering">5.2 动态缓冲：<code>add_audio_buffering</code></a></li>
+        <li><a href="#53-缓冲满了怎么办ignore_audio">5.3 缓冲满了怎么办：<code>ignore_audio</code></a></li>
+        <li><a href="#54-discard_audio--消费已用数据">5.4 <code>discard_audio</code> —— 消费已用数据</a></li>
+      </ol>
+    </li>
+    <li><a href="#六监控去重消音">六、监控去重消音</a></li>
+    <li><a href="#七平台采集线程细节">七、平台采集线程细节</a>
+      <ol>
+        <li><a href="#71-windows-wasapi">7.1 Windows WASAPI</a></li>
+        <li><a href="#72-macos-coreaudio">7.2 macOS CoreAudio</a></li>
+        <li><a href="#73-linux-pulseaudio">7.3 Linux PulseAudio</a></li>
+      </ol>
+    </li>
+    <li><a href="#八完整数据流从采集到编码监控">八、完整数据流（从采集到编码/监控）</a></li>
+    <li><a href="#九一些容易踩的命名坑">九、一些容易踩的命名坑</a></li>
     <li><a href="#小结">小结</a></li>
   </ol>
 
@@ -563,36 +595,53 @@
     <section class="article-content">
     
     
-    <p>前两篇分别梳理了主线程启动流程和图形渲染管线，这篇来看音频子系统。OBS 常说的&quot;三大线程&quot;之外，音频其实也有一套完整的线程体系——一个核心音频处理线程加上各个平台的音频采集线程。这篇文章是我在啃音频相关源码时的学习笔记，保留了&quot;边问边学&quot;的过程感，希望能帮到同样对 OBS 音频架构感兴趣的人。</p>
+    <p>前两篇分别梳理了主线程启动流程和图形渲染管线，这篇来看音频子系统。这篇文章是我在啃音频相关源码时的学习笔记，以初学者的第一视角记录了整个学习过程。全篇围绕&quot;数据从哪来、经过谁、到哪去&quot;这条主线，把采集线程、音频树构建、混音渲染、缓冲管理等细节逐一拆开。建议配合前两篇一起看。</p>
 <hr>
-<h2 id="先搞清楚三大线程之外还有什么">先搞清楚&quot;三大线程&quot;之外还有什么
-</h2><p>OBS 常说的&quot;三大线程&quot;指的是：</p>
-<ul>
-<li><strong>main 线程</strong> — UI 主线程</li>
-<li><strong>graphics 线程</strong> — <code>obs_graphics_thread</code>，视频渲染</li>
-<li><strong>video encoder 线程</strong> — 视频编码</li>
-</ul>
-<p>但音频也是一个完整的子系统，有自己的一套线程体系。核心是 <strong>1 个核心音频处理线程</strong> + N 个平台相关的<strong>音频采集线程</strong>。</p>
-<hr>
-<h2 id="一核心audio-io-audio-thread">一、核心：<code>audio-io: audio thread</code>
-</h2><p>这是整个音频系统的心脏，全局只有<strong>一个</strong>。</p>
-<h3 id="在哪启动的">在哪启动的
+<h2 id="一核心线程的启动和主循环">一、核心线程的启动和主循环
+</h2><h3 id="11-启动链路">1.1 启动链路
 </h3><div class="highlight"><div class="chroma">
 <table class="lntable"><tr><td class="lntd">
-<pre tabindex="0" class="chroma"><code><span class="lnt">1
-</span><span class="lnt">2
-</span><span class="lnt">3
-</span><span class="lnt">4
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
 </span></code></pre></td>
 <td class="lntd">
-<pre tabindex="0" class="chroma"><code class="language-fallback" data-lang="fallback"><span class="line"><span class="cl">obs_reset_audio2()                          [libobs/obs.c]
-</span></span><span class="line"><span class="cl">  └─ obs_init_audio()
-</span></span><span class="line"><span class="cl">       └─ audio_output_open(&amp;audio-&gt;audio, ai)  [libobs/media-io/audio-io.c]
-</span></span><span class="line"><span class="cl">            └─ pthread_create(&amp;out-&gt;thread, NULL, audio_thread, out)
+<pre tabindex="0" class="chroma"><code class="language-fallback" data-lang="fallback"><span class="line"><span class="cl">obs_reset_audio2()                                   [libobs/obs.c:1617]
+</span></span><span class="line"><span class="cl">  └─ obs_init_audio()                                [libobs/obs.c:919]
+</span></span><span class="line"><span class="cl">       ├─ 初始化 monitoring_mutex、task_mutex
+</span></span><span class="line"><span class="cl">       ├─ 将 set_audio_thread 任务推入 audio-&gt;tasks 队列
+</span></span><span class="line"><span class="cl">       ├─ 注册 &#34;deduplication_changed&#34; 信号
+</span></span><span class="line"><span class="cl">       └─ audio_output_open(&amp;audio-&gt;audio, &amp;ai)      [libobs/media-io/audio-io.c:353]
+</span></span><span class="line"><span class="cl">            ├─ bzalloc 分配 struct audio_output
+</span></span><span class="line"><span class="cl">            ├─ 从 info 拷贝配置（采样率/格式/声道）
+</span></span><span class="line"><span class="cl">            ├─ 计算 block_size（planar 下 = sizeof(float) = 4）
+</span></span><span class="line"><span class="cl">            ├─ 计算 channels（如立体声 = 2）
+</span></span><span class="line"><span class="cl">            ├─ 计算 planes（planar 下 = channels，交错下 = 1）
+</span></span><span class="line"><span class="cl">            ├─ 保存 input_callback = audio_callback    ← 核心回调
+</span></span><span class="line"><span class="cl">            ├─ pthread_mutex_init_recursive(&amp;input_mutex)
+</span></span><span class="line"><span class="cl">            ├─ os_event_init(&amp;stop_event, MANUAL)      ← 停止信号
+</span></span><span class="line"><span class="cl">            └─ pthread_create(&amp;out-&gt;thread, NULL, audio_thread, out)  ← 🔴 线程诞生
 </span></span></code></pre></td></tr></table>
 </div>
-</div><p><code>audio_output_open</code> 不光创建了线程，还初始化了 6 个 mix（混音母线）、注册了核心回调 <code>audio_callback</code>（这个回调每次 Tick 都会被调用）、把 <code>set_audio_thread</code> 任务推入队列用于标记 TLS。</p>
-<h3 id="主循环长什么样">主循环长什么样
+</div><p>几个初始化细节值得注意：</p>
+<ul>
+<li><code>block_size</code> 是<strong>一个采样点的单声道字节数</strong>，OBS 内部用 <code>AUDIO_FORMAT_FLOAT_PLANAR</code>（声道分离的 float），所以 <code>block_size = sizeof(float) = 4</code></li>
+<li><code>planes</code> 在 planar 格式下等于声道数，意思是&quot;声道数 = 独立缓冲区数&quot;</li>
+<li><code>set_audio_thread</code> 这个 task 推入队列后，会在第一次 <code>audio_callback</code> 末尾的 <code>execute_audio_tasks()</code> 里被执行，把 <code>THREAD_LOCAL is_audio_thread = true</code> 设好，之后 <code>obs_queue_task(OBS_TASK_AUDIO, ...)</code> 就能判断自己是否已经在音频线程上</li>
+</ul>
+<h3 id="12-主循环">1.2 主循环
 </h3><div class="highlight"><div class="chroma">
 <table class="lntable"><tr><td class="lntd">
 <pre tabindex="0" class="chroma"><code><span class="lnt"> 1
@@ -617,54 +666,43 @@
 </span><span class="lnt">20
 </span><span class="lnt">21
 </span><span class="lnt">22
+</span><span class="lnt">23
+</span><span class="lnt">24
+</span><span class="lnt">25
+</span><span class="lnt">26
+</span><span class="lnt">27
 </span></code></pre></td>
 <td class="lntd">
 <pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">static</span> <span class="kt">void</span> <span class="o">*</span><span class="nf">audio_thread</span><span class="p">(</span><span class="kt">void</span> <span class="o">*</span><span class="n">param</span><span class="p">)</span>
 </span></span><span class="line"><span class="cl"><span class="p">{</span>
 </span></span><span class="line"><span class="cl">    <span class="k">struct</span> <span class="n">audio_output</span> <span class="o">*</span><span class="n">audio</span> <span class="o">=</span> <span class="n">param</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">size_t</span> <span class="n">rate</span> <span class="o">=</span> <span class="n">audio</span><span class="o">-&gt;</span><span class="n">info</span><span class="p">.</span><span class="n">samples_per_sec</span><span class="p">;</span>       <span class="c1">// 比如 48000
+</span></span><span class="line"><span class="cl">    <span class="kt">size_t</span> <span class="n">rate</span> <span class="o">=</span> <span class="n">audio</span><span class="o">-&gt;</span><span class="n">info</span><span class="p">.</span><span class="n">samples_per_sec</span><span class="p">;</span>     <span class="c1">// 比如 48000
 </span></span></span><span class="line"><span class="cl">    <span class="kt">uint64_t</span> <span class="n">samples</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">uint64_t</span> <span class="n">start_time</span> <span class="o">=</span> <span class="nf">os_gettime_ns</span><span class="p">();</span>           <span class="c1">// 启动时的墙上时间，只取一次！
+</span></span><span class="line"><span class="cl">    <span class="kt">uint64_t</span> <span class="n">start_time</span> <span class="o">=</span> <span class="nf">os_gettime_ns</span><span class="p">();</span>         <span class="c1">// 🔴 只取一次！所有后续时间从此推导
 </span></span></span><span class="line"><span class="cl">    <span class="kt">uint64_t</span> <span class="n">prev_time</span> <span class="o">=</span> <span class="n">start_time</span><span class="p">;</span>
 </span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="nf">os_set_thread_name</span><span class="p">(</span><span class="s">&#34;audio-io: audio thread&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="cp">#ifdef _WIN32
+</span></span></span><span class="line"><span class="cl">    <span class="nf">AvSetMmThreadCharacteristics</span><span class="p">(</span><span class="sa">L</span><span class="s">&#34;Audio&#34;</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">unused</span><span class="p">);</span>  <span class="c1">// 设置 MMCSS Audio 优先级
+</span></span></span><span class="line"><span class="cl"><span class="cp">#endif
+</span></span></span><span class="line"><span class="cl">    <span class="nf">os_set_thread_name</span><span class="p">(</span><span class="s">&#34;audio-io: audio thread&#34;</span><span class="p">);</span>
 </span></span><span class="line"><span class="cl">
 </span></span><span class="line"><span class="cl">    <span class="k">while</span> <span class="p">(</span><span class="nf">os_event_try</span><span class="p">(</span><span class="n">audio</span><span class="o">-&gt;</span><span class="n">stop_event</span><span class="p">)</span> <span class="o">==</span> <span class="n">EAGAIN</span><span class="p">)</span> <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">samples</span> <span class="o">+=</span> <span class="mi">1024</span><span class="p">;</span>                             <span class="c1">// 每次迭代 +1024 帧
+</span></span><span class="line"><span class="cl">        <span class="n">samples</span> <span class="o">+=</span> <span class="n">AUDIO_OUTPUT_FRAMES</span><span class="p">;</span>            <span class="c1">// 每次 +1024
 </span></span></span><span class="line"><span class="cl">        <span class="kt">uint64_t</span> <span class="n">audio_time</span> <span class="o">=</span> <span class="n">start_time</span> <span class="o">+</span> <span class="nf">audio_frames_to_ns</span><span class="p">(</span><span class="n">rate</span><span class="p">,</span> <span class="n">samples</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="c1">// 从 start_time 按采样点数算绝对时间，48kHz 下每次间隔 21.33ms
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="nf">os_sleepto_ns_fast</span><span class="p">(</span><span class="n">audio_time</span><span class="p">);</span>            <span class="c1">// 精确睡到下一个帧边界
 </span></span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="nf">os_sleepto_ns_fast</span><span class="p">(</span><span class="n">audio_time</span><span class="p">);</span>              <span class="c1">// 睡到那个绝对时刻
-</span></span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="nf">input_and_output</span><span class="p">(</span><span class="n">audio</span><span class="p">,</span> <span class="n">audio_time</span><span class="p">,</span> <span class="n">prev_time</span><span class="p">);</span>  <span class="c1">// 干活
-</span></span></span><span class="line"><span class="cl">        <span class="n">prev_time</span> <span class="o">=</span> <span class="n">audio_time</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">profile_start</span><span class="p">(</span><span class="n">audio_thread_name</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">input_and_output</span><span class="p">(</span><span class="n">audio</span><span class="p">,</span> <span class="n">audio_time</span><span class="p">,</span> <span class="n">prev_time</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="n">prev_time</span> <span class="o">=</span> <span class="n">audio_time</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">profile_end</span><span class="p">(</span><span class="n">audio_thread_name</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">profile_reenable_thread</span><span class="p">();</span>
 </span></span><span class="line"><span class="cl">    <span class="p">}</span>
 </span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="nb">NULL</span><span class="p">;</span>
 </span></span><span class="line"><span class="cl"><span class="p">}</span>
 </span></span></code></pre></td></tr></table>
 </div>
-</div><p><strong>关键点</strong>：<code>audio_time</code> 始终从固定的 <code>start_time</code> 按采样点累积计算，而不是&quot;当前时间 + 偏移&quot;。所以即使某次迭代处理慢了，下一次的目标时刻不会被推迟——线程会少睡甚至不睡来追赶，不会累积漂移。</p>
-<h3 id="一次迭代--处理-1024-帧">一次迭代 = 处理 1024 帧
-</h3><p>一次迭代就是一个&quot;音频 Tick&quot;。48kHz 下每 Tick 约 21.33ms，每秒约 47 次。</p>
-<p>每次迭代调用的 <code>input_and_output</code> 做了五件事：</p>
-<ol>
-<li><strong>扫描活跃的 mix</strong>：6 个 mix 中哪些有 consumer（编码器/监控挂载在上面）</li>
-<li><strong>清零 mix buffer</strong>：为后续累加混音做准备</li>
-<li><strong>调用 <code>audio_callback</code></strong>：从各个 source 收集数据、渲染、混音</li>
-<li><strong>钳位</strong>：float 样本限制在 [-1.0, 1.0]，同时保留 unclamped 副本</li>
-<li><strong>分发</strong>：把混好的数据通过 <code>do_audio_output</code> 发给编码器和监控</li>
-</ol>
-<hr>
-<h2 id="二6-个-mix--8-个-channel">二、6 个 mix × 8 个 channel
-</h2><p>这两个数字经常同时出现，容易搞混。它们是两个正交的维度：</p>
-<ul>
-<li><strong>6 个 mix</strong> = 6 条独立的混音母线（<strong>纵轴</strong>），对应 OBS 高级输出模式下的 6 条独立音轨。比如 track1 推流、track2 录完整混音、track3 只录麦克风……</li>
-<li><strong>8 个 channel</strong> = 每条母线最多 8 个声道（<strong>横轴</strong>），对应 7.1 环绕声（FL/FR/FC/LFE/RL/RR/SL/SR）</li>
-</ul>
-<p>每个 source 通过 <code>audio_mixers</code> 位掩码决定&quot;我去哪几条 mix&quot;。绝大多数场景只需要立体声（2 声道），但数组空间按最大值预留。</p>
-<hr>
-<h2 id="三input_and_output-的核心audio_callback">三、<code>input_and_output</code> 的核心：<code>audio_callback</code>
-</h2><p><code>audio_callback</code> 是 <code>input_and_output</code> 中调用的核心渲染回调。它的签名：</p>
+</div><p><strong>时间计算：</strong></p>
 <div class="highlight"><div class="chroma">
 <table class="lntable"><tr><td class="lntd">
 <pre tabindex="0" class="chroma"><code><span class="lnt">1
@@ -675,156 +713,266 @@
 </span><span class="lnt">6
 </span></code></pre></td>
 <td class="lntd">
-<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="kt">bool</span> <span class="nf">audio_callback</span><span class="p">(</span><span class="kt">void</span> <span class="o">*</span><span class="n">param</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">                    <span class="kt">uint64_t</span> <span class="n">start_ts_in</span><span class="p">,</span>    <span class="c1">// 本次 Tick 起始时间戳
-</span></span></span><span class="line"><span class="cl">                    <span class="kt">uint64_t</span> <span class="n">end_ts_in</span><span class="p">,</span>      <span class="c1">// 本次 Tick 结束时间戳
-</span></span></span><span class="line"><span class="cl">                    <span class="kt">uint64_t</span> <span class="o">*</span><span class="n">out_ts</span><span class="p">,</span>        <span class="c1">// [输出] 实际使用的时间戳
-</span></span></span><span class="line"><span class="cl">                    <span class="kt">uint32_t</span> <span class="n">mixers</span><span class="p">,</span>         <span class="c1">// 位掩码：哪些 mix 活跃
-</span></span></span><span class="line"><span class="cl">                    <span class="k">struct</span> <span class="n">audio_output_data</span> <span class="o">*</span><span class="n">mixes</span><span class="p">)</span>  <span class="c1">// [输入+输出] 待填充的 mix buffer
-</span></span></span></code></pre></td></tr></table>
-</div>
-</div><p>它的工作分八步：</p>
-<h3 id="step-1准备阶段">Step 1：准备阶段
-</h3><div class="highlight"><div class="chroma">
-<table class="lntable"><tr><td class="lntd">
-<pre tabindex="0" class="chroma"><code><span class="lnt">1
-</span><span class="lnt">2
-</span><span class="lnt">3
-</span></code></pre></td>
-<td class="lntd">
-<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">struct</span> <span class="n">ts_info</span> <span class="n">ts</span> <span class="o">=</span> <span class="p">{</span><span class="n">start_ts_in</span><span class="p">,</span> <span class="n">end_ts_in</span><span class="p">};</span>   <span class="c1">// 本次 Tick 的时间窗口
-</span></span></span><span class="line"><span class="cl"><span class="nf">deque_push_back</span><span class="p">(</span><span class="o">&amp;</span><span class="n">buffered_timestamps</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">ts</span><span class="p">);</span>       <span class="c1">// 推入队尾
-</span></span></span><span class="line"><span class="cl"><span class="nf">deque_peek_front</span><span class="p">(</span><span class="o">&amp;</span><span class="n">buffered_timestamps</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">ts</span><span class="p">);</span>      <span class="c1">// 从队首取出——可能不一样！
-</span></span></span></code></pre></td></tr></table>
-</div>
-</div><p><code>buffered_timestamps</code> 是一个双端队列。正常无缓冲时，推入再取出的是同一个。但如果之前有缓冲积累（源时间戳落后），队列里已经插入了更早的时间区间，从队首取出的 <code>ts</code> 就被&quot;拉回&quot;到了更早的时间。</p>
-<h3 id="step-2构建渲染树">Step 2：构建渲染树
-</h3><p>遍历所有 Scene/View 的 channel 以及全局音源（不在任何 Scene 里的纯音频源），构建两个列表：</p>
-<ul>
-<li><strong><code>render_order</code></strong>：音频源的有序渲染列表，保证子源在父源之前渲染</li>
-<li><strong><code>root_nodes</code></strong>：Top-level 源列表，只有它们直接参与混音（避免子源被重复累加）</li>
-</ul>
-<h3 id="step-3渲染每个源">Step 3：渲染每个源
-</h3><p>对 <code>render_order</code> 中每个 source 调用 <code>obs_source_audio_render()</code>。这里区分两种源：</p>
-<p><strong>普通采集源</strong>（麦克风、桌面音频）：从 <code>audio_input_buf</code>（deque）取 1024 帧 → 输出到 <code>audio_output_buf</code></p>
-<p><strong>复合源</strong>（Scene、Group）：通过 <code>audio_submix</code> 累加所有子源的 <code>audio_output_buf</code> → 再走一遍 <code>obs_source_output_audio</code> → 这会经过复合源<strong>自己身上挂的 filter 链</strong>。</p>
-<p>也就是说子源的 filter 处理单个音源（去噪、压缩），复合源的 filter 处理整体（总线压缩、总限幅），两层独立的 filter 链。</p>
-<h3 id="step-4监控去重消音">Step 4：监控去重消音
-</h3><p>当用户既做了音频监控，又添加了&quot;音频输出采集&quot;源，且它们指向同一个设备时，会产生回声。<code>should_silence_monitored_source</code> 检测这种情况，对重复采集的源调用 <code>clear_audio_output_buf</code> 清零——回声被消除了，但监控本身不受影响。</p>
-<h3 id="step-5处理时间戳落后的源">Step 5：处理时间戳落后的源
-</h3><div class="highlight"><div class="chroma">
-<table class="lntable"><tr><td class="lntd">
-<pre tabindex="0" class="chroma"><code><span class="lnt">1
-</span><span class="lnt">2
-</span><span class="lnt">3
-</span><span class="lnt">4
-</span><span class="lnt">5
-</span><span class="lnt">6
-</span></code></pre></td>
-<td class="lntd">
-<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="nf">audio_buffering_maxed</span><span class="p">(</span><span class="n">audio</span><span class="p">)</span>           <span class="c1">// 缓冲已满
-</span></span></span><span class="line"><span class="cl">    <span class="o">&amp;&amp;</span> <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_ts</span> <span class="o">!=</span> <span class="mi">0</span>               <span class="c1">// 源曾经产过数据
-</span></span></span><span class="line"><span class="cl">    <span class="o">&amp;&amp;</span> <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_ts</span> <span class="o">&lt;</span> <span class="n">ts</span><span class="p">.</span><span class="n">start</span><span class="p">)</span> <span class="p">{</span>      <span class="c1">// 源落后于混音窗口
-</span></span></span><span class="line"><span class="cl">    <span class="c1">// 采集源：ignore_audio → 从 deque 弹掉落后帧
-</span></span></span><span class="line"><span class="cl">    <span class="c1">// 渲染型音源（媒体文件等）：audio_pending = true → 跳过本次混音
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="c1">// audio-io.h:195-198
+</span></span></span><span class="line"><span class="cl"><span class="k">static</span> <span class="kr">inline</span> <span class="kt">uint64_t</span> <span class="nf">audio_frames_to_ns</span><span class="p">(</span><span class="kt">size_t</span> <span class="n">sample_rate</span><span class="p">,</span> <span class="kt">uint64_t</span> <span class="n">frames</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="nf">util_mul_div64</span><span class="p">(</span><span class="n">frames</span><span class="p">,</span> <span class="mi">1000000000ULL</span><span class="p">,</span> <span class="n">sample_rate</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">//     = frames × 1,000,000,000 ÷ sample_rate
 </span></span></span><span class="line"><span class="cl"><span class="p">}</span>
 </span></span></code></pre></td></tr></table>
 </div>
-</div><p>为什么渲染型音源不能丢数据？因为媒体源的数据不是在 deque 里的——它是每次 Tick 调用 <code>audio_render</code> 回调<strong>当场生成</strong>的。丢音频帧会打乱 A/V 同步（声音和画面对不上），而且外部没法用 <code>deque_pop_front</code> 干预内部解码状态。只能标记 pending 等它自己追上来。</p>
-<h3 id="step-6缓冲管理">Step 6：缓冲管理
-</h3><p>检查是否还有源的时间戳落后。如果缓冲未满，调用 <code>add_audio_buffering</code> 把 <code>ts</code> 往前拉。注意：<strong>本次加的缓冲要到下一次 Tick 的 peek 才生效</strong>。</p>
-<h3 id="step-7混音">Step 7：混音
-</h3><p>只对 <code>root_nodes</code> 中不在 pending 状态的源做 <code>mix_audio</code>——把 <code>audio_output_buf</code> 逐声道累加到 mix buffer。</p>
-<h3 id="step-8丢弃已消费数据">Step 8：丢弃已消费数据
-</h3><p>遍历所有源，弹出 input buffer 中已被混音覆盖的帧，推进 <code>source-&gt;audio_ts</code>，释放缓冲空间。</p>
-<hr>
-<h2 id="四时间戳是怎么玩的">四、时间戳是怎么玩的
-</h2><p><code>source-&gt;audio_ts</code> 表示&quot;这个源生产到了哪个时间点&quot;，<code>ts.start</code> 表示&quot;混音窗口从哪个时间点开始需要数据&quot;。</p>
-<div class="highlight"><div class="chroma">
-<table class="lntable"><tr><td class="lntd">
-<pre tabindex="0" class="chroma"><code><span class="lnt">1
-</span><span class="lnt">2
-</span><span class="lnt">3
-</span><span class="lnt">4
-</span><span class="lnt">5
-</span></code></pre></td>
-<td class="lntd">
-<pre tabindex="0" class="chroma"><code class="language-fallback" data-lang="fallback"><span class="line"><span class="cl">正常:  source-&gt;audio_ts &gt;= ts.start  → 数据够，正常渲染
-</span></span><span class="line"><span class="cl">落后:  source-&gt;audio_ts &lt;  ts.start  → 数据不够
-</span></span><span class="line"><span class="cl">  
-</span></span><span class="line"><span class="cl">  缓冲未满 → add_audio_buffering 把 ts 往回拉 → 等源追上
-</span></span><span class="line"><span class="cl">  缓冲已满 → ignore_audio 强行丢数据 / pending 等待
-</span></span></code></pre></td></tr></table>
-</div>
-</div><p>这就是 OBS 动态缓冲的核心逻辑——先用延迟换稳定性，延迟到了上限再放弃。</p>
-<hr>
-<h2 id="五平台采集线程一览">五、平台采集线程一览
-</h2><p>这些线程从操作系统音频 API 读取 PCM 数据，通过 <code>obs_source_output_audio()</code> 推入 source 的 <code>audio_input_buf</code>（deque），是<strong>生产者</strong>。</p>
+</div><p>推算一下：</p>
 <div class="table-wrapper"><table>
 	<thead>
 			<tr>
-					<th>平台</th>
-					<th>采集线程</th>
-					<th>数据来源</th>
+					<th>迭代</th>
+					<th>samples</th>
+					<th>计算</th>
+					<th>audio_time - start_time</th>
 			</tr>
 	</thead>
 	<tbody>
 			<tr>
-					<td>Windows</td>
-					<td><code>win-wasapi: capture thread</code> (RTWQ 不可用时)</td>
-					<td>WASAPI IAudioCaptureClient</td>
+					<td>1</td>
+					<td>1024</td>
+					<td>1024 × 10⁹ ÷ 48000</td>
+					<td>21,333,333 ns (21.33 ms)</td>
 			</tr>
 			<tr>
-					<td>Windows</td>
-					<td>RTWQ 系统线程池 (RTWQ 可用时，Win10 1703+)</td>
-					<td>同上</td>
+					<td>2</td>
+					<td>2048</td>
+					<td>2048 × 10⁹ ÷ 48000</td>
+					<td>42,666,666 ns (42.67 ms)</td>
 			</tr>
 			<tr>
-					<td>Windows</td>
-					<td><code>win-wasapi: reconnect thread</code></td>
-					<td>设备重连协调</td>
-			</tr>
-			<tr>
-					<td>macOS</td>
-					<td>CoreAudio 内部 I/O 线程 (input_callback)</td>
-					<td>AudioUnit</td>
-			</tr>
-			<tr>
-					<td>macOS</td>
-					<td><code>coreaudio: reconnect thread</code> (pthread)</td>
-					<td>设备重连重试</td>
-			</tr>
-			<tr>
-					<td>Linux</td>
-					<td>ALSA listen 线程 (pthread)</td>
-					<td>snd_pcm_readi</td>
-			</tr>
-			<tr>
-					<td>Linux</td>
-					<td>ALSA reopen 线程 (pthread)</td>
-					<td>设备重打开</td>
-			</tr>
-			<tr>
-					<td>Linux</td>
-					<td>OSS reader 线程 (pthread)</td>
-					<td>/dev/dsp</td>
-			</tr>
-			<tr>
-					<td>Linux</td>
-					<td>PulseAudio threaded mainloop (PA 内部)</td>
-					<td>pa_stream_read</td>
-			</tr>
-			<tr>
-					<td>OpenBSD</td>
-					<td>sndio 线程 (pthread, detached)</td>
-					<td>sio_read</td>
+					<td>3</td>
+					<td>3072</td>
+					<td>3072 × 10⁹ ÷ 48000</td>
+					<td>64,000,000 ns (64.00 ms)</td>
 			</tr>
 	</tbody>
 </table></div>
-<p>所有采集线程最终都调用同一个函数：<code>obs_source_output_audio()</code>。这就是 OBS 音频子系统的&quot;多生产者—单消费者&quot;架构：N 个采集线程 push → 每个 source 一个 deque → 1 个 audio-io 线程 pop、混音、分发。</p>
+<p>一次 Tick 的时间预算：48kHz 下 21.33ms（每秒约 47 次），44.1kHz 下 23.22ms（每秒约 43 次）。</p>
+<p><strong>不会累积漂移的原因</strong>：<code>audio_time = start_time + 累积帧数换算的绝对时间</code>。<code>start_time</code> 只取了<strong>一次</strong>，所以即使某次 <code>input_and_output</code> 多花了 5ms，下一次的 <code>audio_time</code> 目标值完全不受影响——线程会少睡 5ms 来追赶。</p>
+<h3 id="13-input_and_output-逐行解析">1.3 <code>input_and_output</code> 逐行解析
+</h3><div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">static</span> <span class="kt">void</span> <span class="nf">input_and_output</span><span class="p">(</span><span class="k">struct</span> <span class="n">audio_output</span> <span class="o">*</span><span class="n">audio</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                              <span class="kt">uint64_t</span> <span class="n">audio_time</span><span class="p">,</span>    <span class="c1">// 本次 Tick 结束时间戳
+</span></span></span><span class="line"><span class="cl">                              <span class="kt">uint64_t</span> <span class="n">prev_time</span><span class="p">)</span>     <span class="c1">// 上次 Tick 结束 = 本次开始
+</span></span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">size_t</span> <span class="n">bytes</span> <span class="o">=</span> <span class="n">AUDIO_OUTPUT_FRAMES</span> <span class="o">*</span> <span class="n">audio</span><span class="o">-&gt;</span><span class="n">block_size</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">//              1024              × 4 = 4096 (单声道 planar float 下)
+</span></span></span><span class="line"><span class="cl">    <span class="k">struct</span> <span class="n">audio_output_data</span> <span class="n">data</span><span class="p">[</span><span class="n">MAX_AUDIO_MIXES</span><span class="p">];</span>  <span class="c1">// data[0..5]
+</span></span></span><span class="line"><span class="cl">    <span class="kt">uint32_t</span> <span class="n">active_mixes</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>                       <span class="c1">// 位掩码
+</span></span></span><span class="line"><span class="cl">    <span class="kt">uint64_t</span> <span class="n">new_ts</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">success</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="nf">memset</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="k">sizeof</span><span class="p">(</span><span class="n">data</span><span class="p">));</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p><code>block_size = sizeof(float) × (交错? channels : 1)</code>。OBS 内部分配 planar 格式，每个声道有独立 buffer，所以 <code>block_size = 4</code>，<code>bytes = 4096</code>（1024 个 float = 4096 字节，正好是一个声道一个 Tick 的数据量）。后续代码里 <code>bytes</code> 用来做 memset 长度、clamp 长度等，都是按<strong>单声道平面</strong>算的。</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span><span class="lnt">4
+</span><span class="lnt">5
+</span><span class="lnt">6
+</span><span class="lnt">7
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl">    <span class="c1">// ① 扫描哪些 mix 有 consumer
+</span></span></span><span class="line"><span class="cl">    <span class="nf">pthread_mutex_lock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">audio</span><span class="o">-&gt;</span><span class="n">input_mutex</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">size_t</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">MAX_AUDIO_MIXES</span><span class="p">;</span> <span class="n">i</span><span class="o">++</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">audio</span><span class="o">-&gt;</span><span class="n">mixes</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">inputs</span><span class="p">.</span><span class="n">num</span><span class="p">)</span>            <span class="c1">// mix[i] 的 inputs 列表非空
+</span></span></span><span class="line"><span class="cl">            <span class="n">active_mixes</span> <span class="o">|=</span> <span class="p">(</span><span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="n">i</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="nf">pthread_mutex_unlock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">audio</span><span class="o">-&gt;</span><span class="n">input_mutex</span><span class="p">);</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p><code>audio-&gt;mixes[i].inputs</code> 是一个动态数组，元素是 <code>struct audio_input</code>——每个元素就是一个 consumer（编码器或监控）。这些 consumer 通过 <code>audio_output_connect()</code> 挂载上来。上锁是因为 <code>connect/disconnect</code> 可能在其他线程被调用。</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl">    <span class="c1">// ② 清零 mix buffer，把 data 指针指向它们
+</span></span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">size_t</span> <span class="n">mix_idx</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">mix_idx</span> <span class="o">&lt;</span> <span class="n">MAX_AUDIO_MIXES</span><span class="p">;</span> <span class="n">mix_idx</span><span class="o">++</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">struct</span> <span class="n">audio_mix</span> <span class="o">*</span><span class="n">mix</span> <span class="o">=</span> <span class="o">&amp;</span><span class="n">audio</span><span class="o">-&gt;</span><span class="n">mixes</span><span class="p">[</span><span class="n">mix_idx</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">memset</span><span class="p">(</span><span class="n">mix</span><span class="o">-&gt;</span><span class="n">buffer</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="k">sizeof</span><span class="p">(</span><span class="n">mix</span><span class="o">-&gt;</span><span class="n">buffer</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// sizeof = 8声道 × 1024帧 × 4B = 32KB per mix
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">for</span> <span class="p">(</span><span class="kt">size_t</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">audio</span><span class="o">-&gt;</span><span class="n">planes</span><span class="p">;</span> <span class="n">i</span><span class="o">++</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="n">data</span><span class="p">[</span><span class="n">mix_idx</span><span class="p">].</span><span class="n">data</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">mix</span><span class="o">-&gt;</span><span class="n">buffer</span><span class="p">[</span><span class="n">i</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// data[mix].data[ch] 指向 mix-&gt;buffer[ch]，后面 audio_callback
+</span></span></span><span class="line"><span class="cl">        <span class="c1">// 往 data[].data[] 写就是在操作 mix buffer
+</span></span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p><code>data</code> 是个输出参数——它告诉 <code>audio_callback</code> &ldquo;往哪写&rdquo;。调用前 buffer 全是 0，调用后就是混好的 1024 帧数据。data 指针只需赋值一次，后面一直有效，因为地址没变，变的是地址里的内容。</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl">    <span class="c1">// ③ 调用 audio_callback —— 核心
+</span></span></span><span class="line"><span class="cl">    <span class="n">success</span> <span class="o">=</span> <span class="n">audio</span><span class="o">-&gt;</span><span class="nf">input_cb</span><span class="p">(</span><span class="n">audio</span><span class="o">-&gt;</span><span class="n">input_param</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                               <span class="n">prev_time</span><span class="p">,</span> <span class="n">audio_time</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">new_ts</span><span class="p">,</span> <span class="n">active_mixes</span><span class="p">,</span> <span class="n">data</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">success</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span><span class="p">;</span>   <span class="c1">// buffering 未就绪，跳过后续 clamp 和分发
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// ④ 钳位
+</span></span></span><span class="line"><span class="cl">    <span class="nf">clamp_audio_output</span><span class="p">(</span><span class="n">audio</span><span class="p">,</span> <span class="n">bytes</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// ⑤ 分发
+</span></span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">size_t</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">MAX_AUDIO_MIXES</span><span class="p">;</span> <span class="n">i</span><span class="o">++</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">do_audio_output</span><span class="p">(</span><span class="n">audio</span><span class="p">,</span> <span class="n">i</span><span class="p">,</span> <span class="n">new_ts</span><span class="p">,</span> <span class="n">AUDIO_OUTPUT_FRAMES</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p><code>clamp_audio_output</code> 做的事：</p>
+<ul>
+<li>先把 <code>mix-&gt;buffer</code> <strong>整份复制</strong>到 <code>mix-&gt;buffer_unclamped</code>（保留原始值）</li>
+<li>再对 <code>mix-&gt;buffer</code> 做钳位：<code>val &gt; 1.0 → 1.0</code>、<code>val &lt; -1.0 → -1.0</code>、<code>isNaN → 0</code></li>
+<li>consumer 可以通过 <code>allow_clipping</code> 标志选择用 raw 版还是 clamped 版</li>
+</ul>
+<p><code>do_audio_output</code> 做的事：</p>
+<ul>
+<li>遍历该 mix 的所有 consumer（倒序遍历，安全删除）</li>
+<li>根据 <code>allow_clipping</code> 选择 <code>buffer_unclamped</code> 还是 <code>buffer</code></li>
+<li>如果 consumer 要求的格式/采样率/声道跟 OBS 内部不一样，调 <code>audio_resampler_resample</code></li>
+<li>调用 <code>input-&gt;callback(param, mix_idx, &amp;data)</code>，即 <code>receive_audio</code>（编码器）或 <code>on_audio_playback</code>（监控）</li>
+</ul>
 <hr>
-<h2 id="六数据流全景">六、数据流全景
-</h2><p>把前面的东西串起来，整个音频数据的流动路径如下：</p>
+<h2 id="二音频树是怎么构建的">二、音频树是怎么构建的
+</h2><p>这是整个音频系统里最容易搞混的地方。<code>audio_callback</code> 每 Tick 都要重建两个列表：<code>render_order</code> 和 <code>root_nodes</code>。</p>
+<h3 id="21-推入函数">2.1 推入函数
+</h3><p><strong><code>push_audio_tree(parent, source, audio)</code></strong>（obs-audio.c:30-43）：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">static</span> <span class="kt">void</span> <span class="nf">push_audio_tree</span><span class="p">(</span><span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">parent</span><span class="p">,</span> <span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">source</span><span class="p">,</span> <span class="kt">void</span> <span class="o">*</span><span class="n">p</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">struct</span> <span class="n">obs_core_audio</span> <span class="o">*</span><span class="n">audio</span> <span class="o">=</span> <span class="n">p</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="nf">da_find</span><span class="p">(</span><span class="n">audio</span><span class="o">-&gt;</span><span class="n">render_order</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">source</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span> <span class="o">==</span> <span class="n">DARRAY_INVALID</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">s</span> <span class="o">=</span> <span class="nf">obs_source_get_ref</span><span class="p">(</span><span class="n">source</span><span class="p">);</span>  <span class="c1">// ref 计数 +1
+</span></span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">s</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="nf">da_push_back</span><span class="p">(</span><span class="n">audio</span><span class="o">-&gt;</span><span class="n">render_order</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">s</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="n">s</span><span class="o">-&gt;</span><span class="n">audio_is_duplicated</span> <span class="o">=</span> <span class="nb">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>逻辑很简单：如果在 <code>render_order</code> 里没找到这个 source，就 ref 它并追加到列表末尾。ref 是为了防止 source 在使用期间被释放。</p>
+<p><strong><code>push_audio_tree2(parent, source, audio)</code></strong>（obs-audio.c:59-83）：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
+</span><span class="lnt">16
+</span><span class="lnt">17
+</span><span class="lnt">18
+</span><span class="lnt">19
+</span><span class="lnt">20
+</span><span class="lnt">21
+</span><span class="lnt">22
+</span><span class="lnt">23
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">static</span> <span class="kt">void</span> <span class="nf">push_audio_tree2</span><span class="p">(</span><span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">parent</span><span class="p">,</span> <span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">source</span><span class="p">,</span> <span class="kt">void</span> <span class="o">*</span><span class="n">p</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="nf">obs_source_removed</span><span class="p">(</span><span class="n">source</span><span class="p">))</span> <span class="k">return</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">struct</span> <span class="n">obs_core_audio</span> <span class="o">*</span><span class="n">audio</span> <span class="o">=</span> <span class="n">p</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">size_t</span> <span class="n">idx</span> <span class="o">=</span> <span class="nf">da_find</span><span class="p">(</span><span class="n">audio</span><span class="o">-&gt;</span><span class="n">render_order</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">source</span><span class="p">,</span> <span class="mi">0</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">idx</span> <span class="o">==</span> <span class="n">DARRAY_INVALID</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// 第一次见到 → 加入 render_order
+</span></span></span><span class="line"><span class="cl">        <span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">s</span> <span class="o">=</span> <span class="nf">obs_source_get_ref</span><span class="p">(</span><span class="n">source</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">s</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="nf">da_push_back</span><span class="p">(</span><span class="n">audio</span><span class="o">-&gt;</span><span class="n">render_order</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">s</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="n">s</span><span class="o">-&gt;</span><span class="n">audio_is_duplicated</span> <span class="o">=</span> <span class="nb">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// 已经见过了 → 这个 source 在音频树里出现了多次！
+</span></span></span><span class="line"><span class="cl">        <span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">s</span> <span class="o">=</span> <span class="n">audio</span><span class="o">-&gt;</span><span class="n">render_order</span><span class="p">.</span><span class="n">array</span><span class="p">[</span><span class="n">idx</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="nf">is_individual_audio_source</span><span class="p">(</span><span class="n">s</span><span class="p">)</span> <span class="o">&amp;&amp;</span> <span class="o">!</span><span class="n">s</span><span class="o">-&gt;</span><span class="n">audio_is_duplicated</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="nf">da_push_back</span><span class="p">(</span><span class="n">audio</span><span class="o">-&gt;</span><span class="n">root_nodes</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">source</span><span class="p">);</span>  <span class="c1">// 直接作为 root node 混音
+</span></span></span><span class="line"><span class="cl">            <span class="n">s</span><span class="o">-&gt;</span><span class="n">audio_is_duplicated</span> <span class="o">=</span> <span class="nb">true</span><span class="p">;</span>              <span class="c1">// 标记，避免重复处理
+</span></span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p><code>push_audio_tree2</code> 多了重复检测：如果同一个 source 在多条音频路径里出现了（比如同一麦克风源被放在两个 Scene 的不同 Group 里），只把它作为一个独立的 root_node 混入 mix，而不是在每个子路径上都混一次。这就是 <code>audio_is_duplicated</code> 标记的作用。</p>
+<h3 id="22-构建过程">2.2 构建过程
+</h3><p>在 <code>audio_callback</code> 里：</p>
 <div class="highlight"><div class="chroma">
 <table class="lntable"><tr><td class="lntd">
 <pre tabindex="0" class="chroma"><code><span class="lnt"> 1
@@ -858,68 +1006,1324 @@
 </span><span class="lnt">29
 </span><span class="lnt">30
 </span><span class="lnt">31
+</span><span class="lnt">32
+</span><span class="lnt">33
+</span><span class="lnt">34
+</span><span class="lnt">35
+</span><span class="lnt">36
+</span><span class="lnt">37
+</span><span class="lnt">38
+</span><span class="lnt">39
+</span><span class="lnt">40
 </span></code></pre></td>
 <td class="lntd">
-<pre tabindex="0" class="chroma"><code class="language-fallback" data-lang="fallback"><span class="line"><span class="cl">┌──────────────────────────────────────────────────┐
-</span></span><span class="line"><span class="cl">│  采集线程（生产者）                                  │
-</span></span><span class="line"><span class="cl">│                                                    │
-</span></span><span class="line"><span class="cl">│  WASAPI / CoreAudio / ALSA / PulseAudio / OSS     │
-</span></span><span class="line"><span class="cl">│    │                                               │
-</span></span><span class="line"><span class="cl">│    │ obs_source_output_audio(source, &amp;data)       │
-</span></span><span class="line"><span class="cl">│    │   → process_audio (重采样+balance+downmix)   │
-</span></span><span class="line"><span class="cl">│    │   → filter_async_audio (source 自己的 filter) │
-</span></span><span class="line"><span class="cl">│    │   → deque_push_back(audio_input_buf[ch])     │
-</span></span><span class="line"><span class="cl">│    ▼                                               │
-</span></span><span class="line"><span class="cl">│  source-&gt;audio_input_buf[0..7] (环形缓冲)          │
-</span></span><span class="line"><span class="cl">└────────────────────┬─────────────────────────────┘
-</span></span><span class="line"><span class="cl">                     │
-</span></span><span class="line"><span class="cl">                     ▼
-</span></span><span class="line"><span class="cl">┌──────────────────────────────────────────────────┐
-</span></span><span class="line"><span class="cl">│  audio-io 线程（消费者，每 21.33ms 一次 Tick）      │
-</span></span><span class="line"><span class="cl">│                                                    │
-</span></span><span class="line"><span class="cl">│  input_and_output()                                │
-</span></span><span class="line"><span class="cl">│    ├─ 扫描活跃 mix                                 │
-</span></span><span class="line"><span class="cl">│    ├─ 清零 mix buffer                              │
-</span></span><span class="line"><span class="cl">│    ├─ audio_callback()                             │
-</span></span><span class="line"><span class="cl">│    │    ├─ 构建 render_order / root_nodes          │
-</span></span><span class="line"><span class="cl">│    │    ├─ obs_source_audio_render (pop deque)    │
-</span></span><span class="line"><span class="cl">│    │    ├─ 缓冲管理                                │
-</span></span><span class="line"><span class="cl">│    │    ├─ mix_audio (累加到 mix buffer)           │
-</span></span><span class="line"><span class="cl">│    │    └─ discard_audio (释放已消费数据)          │
-</span></span><span class="line"><span class="cl">│    ├─ clamp [-1.0, 1.0]                            │
-</span></span><span class="line"><span class="cl">│    └─ do_audio_output()                            │
-</span></span><span class="line"><span class="cl">│         ├─ receive_audio (编码器)                   │
-</span></span><span class="line"><span class="cl">│         └─ on_audio_playback (监控)                 │
-</span></span><span class="line"><span class="cl">└──────────────────────────────────────────────────┘
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="nf">da_resize</span><span class="p">(</span><span class="n">audio</span><span class="o">-&gt;</span><span class="n">render_order</span><span class="p">,</span> <span class="mi">0</span><span class="p">);</span>    <span class="c1">// 元素数归零，保留内存
+</span></span></span><span class="line"><span class="cl"><span class="nf">da_resize</span><span class="p">(</span><span class="n">audio</span><span class="o">-&gt;</span><span class="n">root_nodes</span><span class="p">,</span> <span class="mi">0</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// A. 遍历所有 video mix（场景画布）
+</span></span></span><span class="line"><span class="cl"><span class="nf">pthread_mutex_lock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">obs</span><span class="o">-&gt;</span><span class="n">video</span><span class="p">.</span><span class="n">mixes_mutex</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="k">for</span> <span class="p">(</span><span class="kt">size_t</span> <span class="n">j</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">j</span> <span class="o">&lt;</span> <span class="n">obs</span><span class="o">-&gt;</span><span class="n">video</span><span class="p">.</span><span class="n">mixes</span><span class="p">.</span><span class="n">num</span><span class="p">;</span> <span class="n">j</span><span class="o">++</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">struct</span> <span class="n">obs_view</span> <span class="o">*</span><span class="n">view</span> <span class="o">=</span> <span class="n">obs</span><span class="o">-&gt;</span><span class="n">video</span><span class="p">.</span><span class="n">mixes</span><span class="p">.</span><span class="n">array</span><span class="p">[</span><span class="n">j</span><span class="p">]</span><span class="o">-&gt;</span><span class="n">view</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">view</span><span class="p">)</span> <span class="k">continue</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="nf">pthread_mutex_lock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">view</span><span class="o">-&gt;</span><span class="n">channels_mutex</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 遍历这个 view 的每个 channel（最多 32 个）
+</span></span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">uint32_t</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">MAX_CHANNELS</span><span class="p">;</span> <span class="n">i</span><span class="o">++</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">source</span> <span class="o">=</span> <span class="n">view</span><span class="o">-&gt;</span><span class="n">channels</span><span class="p">[</span><span class="n">i</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">source</span> <span class="o">||</span> <span class="o">!</span><span class="nf">obs_source_active</span><span class="p">(</span><span class="n">source</span><span class="p">)</span> <span class="o">||</span> <span class="nf">obs_source_removed</span><span class="p">(</span><span class="n">source</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">            <span class="k">continue</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// 如果这个 video mix 需要混音频 → 该 source 加入 root_nodes
+</span></span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">obs</span><span class="o">-&gt;</span><span class="n">video</span><span class="p">.</span><span class="n">mixes</span><span class="p">.</span><span class="n">array</span><span class="p">[</span><span class="n">j</span><span class="p">]</span><span class="o">-&gt;</span><span class="n">mix_audio</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="nf">da_push_back</span><span class="p">(</span><span class="n">audio</span><span class="o">-&gt;</span><span class="n">root_nodes</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">source</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// 递归遍历子树 → push_audio_tree2 处理重复源
+</span></span></span><span class="line"><span class="cl">        <span class="nf">obs_source_enum_active_tree</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">push_audio_tree2</span><span class="p">,</span> <span class="n">audio</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// 加到渲染列表
+</span></span></span><span class="line"><span class="cl">        <span class="nf">push_audio_tree</span><span class="p">(</span><span class="nb">NULL</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">audio</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="nf">pthread_mutex_unlock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">view</span><span class="o">-&gt;</span><span class="n">channels_mutex</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="nf">pthread_mutex_unlock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">obs</span><span class="o">-&gt;</span><span class="n">video</span><span class="p">.</span><span class="n">mixes_mutex</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// B. 遍历全局音频源（不在任何 Scene 里的纯音频源）
+</span></span></span><span class="line"><span class="cl"><span class="nf">pthread_mutex_lock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">data</span><span class="o">-&gt;</span><span class="n">audio_sources_mutex</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">source</span> <span class="o">=</span> <span class="n">data</span><span class="o">-&gt;</span><span class="n">first_audio_source</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">while</span> <span class="p">(</span><span class="n">source</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="nf">obs_source_removed</span><span class="p">(</span><span class="n">source</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">push_audio_tree</span><span class="p">(</span><span class="nb">NULL</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">audio</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">source</span> <span class="o">=</span> <span class="p">(</span><span class="k">struct</span> <span class="n">obs_source</span> <span class="o">*</span><span class="p">)</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">next_audio_source</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="nf">pthread_mutex_unlock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">data</span><span class="o">-&gt;</span><span class="n">audio_sources_mutex</span><span class="p">);</span>
 </span></span></code></pre></td></tr></table>
 </div>
-</div><hr>
-<h2 id="七两个容易混淆的概念">七、两个容易混淆的概念
-</h2><h3 id="obs_core_data-不只是音频数据"><code>obs_core_data</code> 不只是音频数据
-</h3><p><code>audio_callback</code> 第一行：</p>
+</div><h3 id="23-举例说明">2.3 举例说明
+</h3><p>假设有这样的场景结构：</p>
 <div class="highlight"><div class="chroma">
 <table class="lntable"><tr><td class="lntd">
 <pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span><span class="lnt">4
+</span><span class="lnt">5
+</span><span class="lnt">6
 </span></code></pre></td>
 <td class="lntd">
-<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">struct</span> <span class="n">obs_core_data</span> <span class="o">*</span><span class="n">data</span> <span class="o">=</span> <span class="o">&amp;</span><span class="n">obs</span><span class="o">-&gt;</span><span class="n">data</span><span class="p">;</span>
+<pre tabindex="0" class="chroma"><code class="language-fallback" data-lang="fallback"><span class="line"><span class="cl">Scene &#34;游戏画面&#34;:
+</span></span><span class="line"><span class="cl">  ├── 游戏画面捕获  (视频+音频)
+</span></span><span class="line"><span class="cl">  ├── 麦克风        (纯音频)
+</span></span><span class="line"><span class="cl">  └── Group &#34;语音&#34;:
+</span></span><span class="line"><span class="cl">        ├── Discord  (纯音频)
+</span></span><span class="line"><span class="cl">        └── 麦克风   (同一个麦克风源！重复了)
 </span></span></code></pre></td></tr></table>
 </div>
-</div><p>这个变量名 <code>data</code> 很抽象。实际上 <code>obs_core_data</code> 是 OBS 的<strong>全局对象注册中心</strong>——所有 source、output、encoder、display、service 的链表头都在里面。<code>audio_callback</code> 只用到其中两个字段：<code>first_audio_source</code>（全局音频源链表）和 <code>audio_sources_mutex</code>（保护它的锁）。其他的跟音频一点关系都没有。</p>
-<h3 id="audio_callback-不是采集回调"><code>audio_callback</code> 不是采集回调
-</h3><p>它是<strong>混音渲染</strong>回调，不是采集回调。采集回调是各平台自己的（WASAPI <code>CaptureThread</code>、CoreAudio <code>input_callback</code> 等），它们负责往 deque 里 push 数据。<code>audio_callback</code> 是 audio-io 线程每 Tick 调用一次，负责从 deque 里 pop 数据、混音、分发。</p>
+</div><p>遍历后得到：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
+</span><span class="lnt">16
+</span><span class="lnt">17
+</span><span class="lnt">18
+</span><span class="lnt">19
+</span><span class="lnt">20
+</span><span class="lnt">21
+</span><span class="lnt">22
+</span><span class="lnt">23
+</span><span class="lnt">24
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-gdscript3" data-lang="gdscript3"><span class="line"><span class="cl">                          <span class="n">render_order</span>                        <span class="n">root_nodes</span>
+</span></span><span class="line"><span class="cl">                          <span class="err">────────────</span>                        <span class="err">──────────</span>
+</span></span><span class="line"><span class="cl"><span class="n">obs_source_enum_active_tree</span><span class="p">(</span><span class="err">游戏画面</span><span class="p">,</span> <span class="n">push_audio_tree2</span><span class="p">):</span>
+</span></span><span class="line"><span class="cl">  <span class="err">【没有子源】</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">push_audio_tree</span><span class="p">(</span><span class="n">NULL</span><span class="p">,</span> <span class="err">游戏画面</span><span class="p">):</span>
+</span></span><span class="line"><span class="cl">  <span class="err">加入</span> <span class="n">render_order</span>          <span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="err">游戏画面</span>                       <span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="err">游戏画面</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">obs_source_enum_active_tree</span><span class="p">(</span><span class="err">麦克风</span><span class="p">,</span> <span class="n">push_audio_tree2</span><span class="p">):</span>
+</span></span><span class="line"><span class="cl">  <span class="err">【没有子源】</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">push_audio_tree</span><span class="p">(</span><span class="n">NULL</span><span class="p">,</span> <span class="err">麦克风</span><span class="p">):</span>
+</span></span><span class="line"><span class="cl">  <span class="err">加入</span> <span class="n">render_order</span>          <span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="err">麦克风</span>                         <span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="err">麦克风</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">obs_source_enum_active_tree</span><span class="p">(</span><span class="n">Group</span><span class="p">,</span> <span class="n">push_audio_tree2</span><span class="p">):</span>
+</span></span><span class="line"><span class="cl">  <span class="err">→</span> <span class="err">递归进入</span> <span class="n">Group</span> <span class="err">的子源</span><span class="p">:</span>
+</span></span><span class="line"><span class="cl">    <span class="n">push_audio_tree2</span><span class="p">(</span><span class="n">Group</span><span class="p">,</span> <span class="n">Discord</span><span class="p">):</span> <span class="err">第一次见</span> <span class="err">→</span> <span class="err">加入</span>
+</span></span><span class="line"><span class="cl">    <span class="n">push_audio_tree2</span><span class="p">(</span><span class="n">Group</span><span class="p">,</span> <span class="err">麦克风</span><span class="p">):</span>  <span class="err">已见过！</span>  <span class="err">→</span> <span class="err">麦克风标记为</span> <span class="n">duplicated</span>
+</span></span><span class="line"><span class="cl">                                                  <span class="err">→</span> <span class="err">推入</span> <span class="n">root_nodes</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">push_audio_tree</span><span class="p">(</span><span class="n">NULL</span><span class="p">,</span> <span class="n">Group</span><span class="p">):</span>
+</span></span><span class="line"><span class="cl">  <span class="err">加入</span> <span class="n">render_order</span>          <span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="n">Discord</span>                        <span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="n">Group</span>
+</span></span><span class="line"><span class="cl">                             <span class="p">[</span><span class="mi">3</span><span class="p">]</span> <span class="err">麦克风</span><span class="p">(</span><span class="err">重复标记</span><span class="p">)</span>                <span class="p">[</span><span class="mi">3</span><span class="p">]</span> <span class="err">麦克风</span><span class="p">(</span><span class="n">duplicated</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                             <span class="p">[</span><span class="mi">4</span><span class="p">]</span> <span class="n">Group</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>渲染时按 <code>render_order</code> 顺序，子源（Discord）先于父源（Group）渲染：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span><span class="lnt">4
+</span><span class="lnt">5
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-fallback" data-lang="fallback"><span class="line"><span class="cl">render_order[0]: 游戏画面  → obs_source_audio_render → output_buf 就绪
+</span></span><span class="line"><span class="cl">render_order[1]: 麦克风    → output_buf 就绪
+</span></span><span class="line"><span class="cl">render_order[2]: Discord   → output_buf 就绪
+</span></span><span class="line"><span class="cl">render_order[3]: 麦克风    → 重复标记，跳过（或由 root_nodes 直接混音）
+</span></span><span class="line"><span class="cl">render_order[4]: Group     → audio_submix 累加 Discord 的 output_buf
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>混音时只遍历 <code>root_nodes</code>：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span><span class="lnt">4
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-fallback" data-lang="fallback"><span class="line"><span class="cl">root_nodes[0]: 游戏画面  → mix_audio 累加到 mix buffer
+</span></span><span class="line"><span class="cl">root_nodes[1]: 麦克风    → mix_audio 累加
+</span></span><span class="line"><span class="cl">root_nodes[2]: Group     → mix_audio 累加（Group 里已包含 Discord）
+</span></span><span class="line"><span class="cl">root_nodes[3]: 麦克风    → 重复源，audio_submix 自己处理
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>这样既保证了子源先渲染（父源才能累加），又避免了重复源被加两次。</p>
+<hr>
+<h2 id="三从采集到入队obs_source_output_audio-全流程">三、从采集到入队：<code>obs_source_output_audio</code> 全流程
+</h2><p>所有平台采集线程最终都调这个函数把数据推入 OBS 音频管线。</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
+</span><span class="lnt">16
+</span><span class="lnt">17
+</span><span class="lnt">18
+</span><span class="lnt">19
+</span><span class="lnt">20
+</span><span class="lnt">21
+</span><span class="lnt">22
+</span><span class="lnt">23
+</span><span class="lnt">24
+</span><span class="lnt">25
+</span><span class="lnt">26
+</span><span class="lnt">27
+</span><span class="lnt">28
+</span><span class="lnt">29
+</span><span class="lnt">30
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="kt">void</span> <span class="nf">obs_source_output_audio</span><span class="p">(</span><span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">source</span><span class="p">,</span> <span class="k">const</span> <span class="k">struct</span> <span class="n">obs_source_audio</span> <span class="o">*</span><span class="n">audio_in</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// ① 拷贝并规范化：把超过声道数的 data[i] 设为 NULL
+</span></span></span><span class="line"><span class="cl">    <span class="c1">//   （因为有些 filter 插件不检查声道数而是检查指针是否非零）
+</span></span></span><span class="line"><span class="cl">    <span class="k">struct</span> <span class="n">obs_source_audio</span> <span class="n">audio</span> <span class="o">=</span> <span class="o">*</span><span class="n">audio_in</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">size_t</span> <span class="n">channels</span> <span class="o">=</span> <span class="nf">get_audio_planes</span><span class="p">(</span><span class="n">audio</span><span class="p">.</span><span class="n">format</span><span class="p">,</span> <span class="n">audio</span><span class="p">.</span><span class="n">speakers</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">size_t</span> <span class="n">i</span> <span class="o">=</span> <span class="n">channels</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">MAX_AUDIO_CHANNELS</span><span class="p">;</span> <span class="n">i</span><span class="o">++</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="n">audio</span><span class="p">.</span><span class="n">data</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="nb">NULL</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// ② 格式处理：重采样、平衡、下混
+</span></span></span><span class="line"><span class="cl">    <span class="nf">process_audio</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">audio</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// ③ 过 filter 链
+</span></span></span><span class="line"><span class="cl">    <span class="nf">pthread_mutex_lock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">filter_mutex</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">output</span> <span class="o">=</span> <span class="nf">filter_async_audio</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_data</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">output</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">struct</span> <span class="n">audio_data</span> <span class="n">data</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">MAX_AV_PLANES</span><span class="p">;</span> <span class="n">i</span><span class="o">++</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="n">data</span><span class="p">.</span><span class="n">data</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">output</span><span class="o">-&gt;</span><span class="n">data</span><span class="p">[</span><span class="n">i</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">        <span class="n">data</span><span class="p">.</span><span class="n">frames</span> <span class="o">=</span> <span class="n">output</span><span class="o">-&gt;</span><span class="n">frames</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">data</span><span class="p">.</span><span class="n">timestamp</span> <span class="o">=</span> <span class="n">output</span><span class="o">-&gt;</span><span class="n">timestamp</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// ④ 入队
+</span></span></span><span class="line"><span class="cl">        <span class="nf">pthread_mutex_lock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_mutex</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">source_output_audio_data</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">data</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">pthread_mutex_unlock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_mutex</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="nf">pthread_mutex_unlock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">filter_mutex</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><h3 id="31-process_audio--格式统一">3.1 <code>process_audio</code> —— 格式统一
+</h3><div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
+</span><span class="lnt">16
+</span><span class="lnt">17
+</span><span class="lnt">18
+</span><span class="lnt">19
+</span><span class="lnt">20
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">static</span> <span class="kt">void</span> <span class="nf">process_audio</span><span class="p">(</span><span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">source</span><span class="p">,</span> <span class="k">const</span> <span class="k">struct</span> <span class="n">obs_source_audio</span> <span class="o">*</span><span class="n">audio</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// 如果源格式变了（比如设备换了采样率）→ 重建 resampler
+</span></span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="err">格式变了</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">reset_resampler</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">audio</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="err">有</span> <span class="n">resampler</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">audio_resampler_resample</span><span class="p">(</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">resampler</span><span class="p">,</span> <span class="n">output</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">frames</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">offset</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                                  <span class="n">audio</span><span class="o">-&gt;</span><span class="n">data</span><span class="p">,</span> <span class="n">audio</span><span class="o">-&gt;</span><span class="n">frames</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// 把源的格式（比如 44100Hz/16bit）转成 OBS 内部格式（48000Hz/float planar）
+</span></span></span><span class="line"><span class="cl">    <span class="k">else</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">copy_audio_data</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">audio</span><span class="o">-&gt;</span><span class="n">data</span><span class="p">,</span> <span class="n">audio</span><span class="o">-&gt;</span><span class="n">frames</span><span class="p">,</span> <span class="n">audio</span><span class="o">-&gt;</span><span class="n">timestamp</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// 格式一致，直接拷贝到 source-&gt;audio_data
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 应用左右声道平衡
+</span></span></span><span class="line"><span class="cl">    <span class="nf">process_audio_balancing</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">frames</span><span class="p">,</span> <span class="n">source</span><span class="o">-&gt;</span><span class="n">balance</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 如果全局输出是单声道且源是立体声 → 下混
+</span></span></span><span class="line"><span class="cl">    <span class="nf">downmix_to_mono_planar</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">frames</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><h3 id="32-filter_async_audio--filter-链">3.2 <code>filter_async_audio</code> —— filter 链
+</h3><div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
+</span><span class="lnt">16
+</span><span class="lnt">17
+</span><span class="lnt">18
+</span><span class="lnt">19
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">static</span> <span class="k">struct</span> <span class="n">obs_audio_data</span> <span class="o">*</span><span class="nf">filter_async_audio</span><span class="p">(</span><span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">source</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                                                  <span class="k">struct</span> <span class="n">obs_audio_data</span> <span class="o">*</span><span class="n">in</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// 倒序遍历 filter 数组
+</span></span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">size_t</span> <span class="n">i</span> <span class="o">=</span> <span class="n">source</span><span class="o">-&gt;</span><span class="n">filters</span><span class="p">.</span><span class="n">num</span><span class="p">;</span> <span class="n">i</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">;</span> <span class="n">i</span><span class="o">--</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">struct</span> <span class="n">obs_source</span> <span class="o">*</span><span class="n">filter</span> <span class="o">=</span> <span class="n">source</span><span class="o">-&gt;</span><span class="n">filters</span><span class="p">.</span><span class="n">array</span><span class="p">[</span><span class="n">i</span> <span class="o">-</span> <span class="mi">1</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">filter</span><span class="o">-&gt;</span><span class="n">enabled</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="k">continue</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">filter</span><span class="o">-&gt;</span><span class="n">context</span><span class="p">.</span><span class="n">data</span> <span class="o">&amp;&amp;</span> <span class="n">filter</span><span class="o">-&gt;</span><span class="n">info</span><span class="p">.</span><span class="n">filter_audio</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">in</span> <span class="o">=</span> <span class="n">filter</span><span class="o">-&gt;</span><span class="n">info</span><span class="p">.</span><span class="nf">filter_audio</span><span class="p">(</span><span class="n">filter</span><span class="o">-&gt;</span><span class="n">context</span><span class="p">.</span><span class="n">data</span><span class="p">,</span> <span class="n">in</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="c1">//  ↑ 链式调用：上一个 filter 的输出 → 下一个的输入
+</span></span></span><span class="line"><span class="cl">            <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">in</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                <span class="k">return</span> <span class="nb">NULL</span><span class="p">;</span>   <span class="c1">// filter 返回 NULL = 丢弃这帧
+</span></span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">in</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>这是一个典型的责任链模式。常见音频 filter：噪声明明抑制（RNNoise/Speex）、压限器、增益、均衡器（EQ）、VST 插件。</p>
+<h3 id="33-source_output_audio_data--入-deque">3.3 <code>source_output_audio_data</code> —— 入 deque
+</h3><p>把处理完的数据推到 source 的 <code>audio_input_buf[ch]</code>（每声道一个 deque），同时更新 <code>source-&gt;audio_ts</code>：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span><span class="lnt">4
+</span><span class="lnt">5
+</span><span class="lnt">6
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="c1">// 简化逻辑
+</span></span></span><span class="line"><span class="cl"><span class="k">for</span> <span class="p">(</span><span class="kt">size_t</span> <span class="n">ch</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">ch</span> <span class="o">&lt;</span> <span class="n">channels</span><span class="p">;</span> <span class="n">ch</span><span class="o">++</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="nf">deque_push_back</span><span class="p">(</span><span class="o">&amp;</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_input_buf</span><span class="p">[</span><span class="n">ch</span><span class="p">],</span> <span class="n">data</span><span class="o">-&gt;</span><span class="n">data</span><span class="p">[</span><span class="n">ch</span><span class="p">],</span> <span class="n">size</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_ts</span> <span class="o">=</span> <span class="n">data</span><span class="o">-&gt;</span><span class="n">timestamp</span> <span class="o">+</span> <span class="nf">audio_frames_to_ns</span><span class="p">(</span><span class="n">rate</span><span class="p">,</span> <span class="n">data</span><span class="o">-&gt;</span><span class="n">frames</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// 源的时间戳推进到 &#34;这批数据的结束时间&#34;
+</span></span></span></code></pre></td></tr></table>
+</div>
+</div><hr>
+<h2 id="四从-deque-取出渲染obs_source_audio_render-全流程">四、从 deque 取出渲染：<code>obs_source_audio_render</code> 全流程
+</h2><p>audio-io 线程在 <code>audio_callback</code> 的 Step 3 中调这个函数。</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
+</span><span class="lnt">16
+</span><span class="lnt">17
+</span><span class="lnt">18
+</span><span class="lnt">19
+</span><span class="lnt">20
+</span><span class="lnt">21
+</span><span class="lnt">22
+</span><span class="lnt">23
+</span><span class="lnt">24
+</span><span class="lnt">25
+</span><span class="lnt">26
+</span><span class="lnt">27
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="kt">void</span> <span class="nf">obs_source_audio_render</span><span class="p">(</span><span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">source</span><span class="p">,</span> <span class="kt">uint32_t</span> <span class="n">mixers</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                              <span class="kt">size_t</span> <span class="n">channels</span><span class="p">,</span> <span class="kt">size_t</span> <span class="n">sample_rate</span><span class="p">,</span> <span class="kt">size_t</span> <span class="n">size</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_output_buf</span><span class="p">[</span><span class="mi">0</span><span class="p">][</span><span class="mi">0</span><span class="p">])</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_pending</span> <span class="o">=</span> <span class="nb">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 路径 1：自定义渲染（罕见）
+</span></span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">info</span><span class="p">.</span><span class="n">audio_render</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">custom_audio_render</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">mixers</span><span class="p">,</span> <span class="n">channels</span><span class="p">,</span> <span class="n">sample_rate</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 路径 2：复合源（Scene/Group），先累加子源
+</span></span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">info</span><span class="p">.</span><span class="n">audio_mix</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">audio_submix</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">channels</span><span class="p">,</span> <span class="n">sample_rate</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 路径 3：标准处理（所有源都要走）
+</span></span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_ts</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_pending</span> <span class="o">=</span> <span class="nb">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="nf">process_audio_source_tick</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">mixers</span><span class="p">,</span> <span class="n">channels</span><span class="p">,</span> <span class="n">sample_rate</span><span class="p">,</span> <span class="n">size</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><h3 id="41-路径-1custom_audio_render--渲染型音源媒体文件等">4.1 路径 1：<code>custom_audio_render</code> —— 渲染型音源（媒体文件等）
+</h3><div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
+</span><span class="lnt">16
+</span><span class="lnt">17
+</span><span class="lnt">18
+</span><span class="lnt">19
+</span><span class="lnt">20
+</span><span class="lnt">21
+</span><span class="lnt">22
+</span><span class="lnt">23
+</span><span class="lnt">24
+</span><span class="lnt">25
+</span><span class="lnt">26
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">static</span> <span class="kt">void</span> <span class="nf">custom_audio_render</span><span class="p">(</span><span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">source</span><span class="p">,</span> <span class="kt">uint32_t</span> <span class="n">mixers</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                                 <span class="kt">size_t</span> <span class="n">channels</span><span class="p">,</span> <span class="kt">size_t</span> <span class="n">sample_rate</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">struct</span> <span class="n">obs_source_audio_mix</span> <span class="n">audio_data</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 把 output_buf 地址传给源
+</span></span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="n">mix</span><span class="p">...)</span> <span class="k">for</span> <span class="p">(</span><span class="n">ch</span><span class="p">...)</span>
+</span></span><span class="line"><span class="cl">        <span class="n">audio_data</span><span class="p">.</span><span class="n">output</span><span class="p">[</span><span class="n">mix</span><span class="p">].</span><span class="n">data</span><span class="p">[</span><span class="n">ch</span><span class="p">]</span> <span class="o">=</span> <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_output_buf</span><span class="p">[</span><span class="n">mix</span><span class="p">][</span><span class="n">ch</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 清零活跃 mix
+</span></span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">active_mixes</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">memset</span><span class="p">(</span><span class="n">output_buf</span><span class="p">[</span><span class="n">mix</span><span class="p">][</span><span class="mi">0</span><span class="p">],</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1024</span> <span class="o">*</span> <span class="k">sizeof</span><span class="p">(</span><span class="kt">float</span><span class="p">)</span> <span class="o">*</span> <span class="n">channels</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 调用源的 audio_render → 当场生成 1024 帧，回填 ts
+</span></span></span><span class="line"><span class="cl">    <span class="n">success</span> <span class="o">=</span> <span class="n">source</span><span class="o">-&gt;</span><span class="n">info</span><span class="p">.</span><span class="nf">audio_render</span><span class="p">(</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">context</span><span class="p">.</span><span class="n">data</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                                         <span class="o">&amp;</span><span class="n">ts</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">audio_data</span><span class="p">,</span> <span class="n">mixers</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                                         <span class="n">channels</span><span class="p">,</span> <span class="n">sample_rate</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_ts</span> <span class="o">=</span> <span class="n">success</span> <span class="o">?</span> <span class="nl">ts</span> <span class="p">:</span> <span class="mi">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_pending</span> <span class="o">=</span> <span class="o">!</span><span class="n">success</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 清零未使用的 mix
+</span></span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="n">mix</span><span class="p">...)</span> <span class="k">if</span> <span class="p">((</span><span class="n">mixers</span> <span class="o">&amp;</span> <span class="n">bit</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span> <span class="o">||</span> <span class="p">(</span><span class="n">audio_mixers</span> <span class="o">&amp;</span> <span class="n">bit</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">memset</span><span class="p">(</span><span class="n">output_buf</span><span class="p">[</span><span class="n">mix</span><span class="p">][</span><span class="mi">0</span><span class="p">],</span> <span class="mi">0</span><span class="p">,</span> <span class="p">...);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="nf">apply_audio_volume</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">mixers</span><span class="p">,</span> <span class="n">channels</span><span class="p">,</span> <span class="n">sample_rate</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>关键：数据不是从 deque 取出来的——是<strong>当场生成</strong>的。源的 <code>audio_ts</code> 完全由源自己决定（解码器播放到哪了）。这就是为什么后面处理落后时，渲染型源不能 <code>ignore_audio</code>（没法 pop deque），只能标记 pending。</p>
+<h3 id="42-路径-2audio_submix--复合源累加子源">4.2 路径 2：<code>audio_submix</code> —— 复合源累加子源
+</h3><div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
+</span><span class="lnt">16
+</span><span class="lnt">17
+</span><span class="lnt">18
+</span><span class="lnt">19
+</span><span class="lnt">20
+</span><span class="lnt">21
+</span><span class="lnt">22
+</span><span class="lnt">23
+</span><span class="lnt">24
+</span><span class="lnt">25
+</span><span class="lnt">26
+</span><span class="lnt">27
+</span><span class="lnt">28
+</span><span class="lnt">29
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">static</span> <span class="kt">void</span> <span class="nf">audio_submix</span><span class="p">(</span><span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">source</span><span class="p">,</span> <span class="kt">size_t</span> <span class="n">channels</span><span class="p">,</span> <span class="kt">size_t</span> <span class="n">sample_rate</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">struct</span> <span class="n">audio_output_data</span> <span class="n">audio_data</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">struct</span> <span class="n">obs_source_audio</span> <span class="n">audio</span> <span class="o">=</span> <span class="p">{</span><span class="mi">0</span><span class="p">};</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 把 mix_buf 的地址暴露给 audio_mix 回调
+</span></span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="n">ch</span><span class="p">...)</span> <span class="n">audio_data</span><span class="p">.</span><span class="n">data</span><span class="p">[</span><span class="n">ch</span><span class="p">]</span> <span class="o">=</span> <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_mix_buf</span><span class="p">[</span><span class="n">ch</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 清零
+</span></span></span><span class="line"><span class="cl">    <span class="nf">memset</span><span class="p">(</span><span class="n">mix_buf</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1024</span> <span class="o">*</span> <span class="k">sizeof</span><span class="p">(</span><span class="kt">float</span><span class="p">)</span> <span class="o">*</span> <span class="n">channels</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 调用源的 audio_mix 回调
+</span></span></span><span class="line"><span class="cl">    <span class="c1">// Scene: 遍历所有子源，累加它们的 audio_output_buf
+</span></span></span><span class="line"><span class="cl">    <span class="c1">// Group: 同 Scene
+</span></span></span><span class="line"><span class="cl">    <span class="c1">// Transition: 按过渡进度混合两个子源
+</span></span></span><span class="line"><span class="cl">    <span class="n">success</span> <span class="o">=</span> <span class="n">source</span><span class="o">-&gt;</span><span class="n">info</span><span class="p">.</span><span class="nf">audio_mix</span><span class="p">(</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">context</span><span class="p">.</span><span class="n">data</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                                      <span class="o">&amp;</span><span class="n">ts</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">audio_data</span><span class="p">,</span> <span class="n">channels</span><span class="p">,</span> <span class="n">sample_rate</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 把累加结果组装成 obs_source_audio
+</span></span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="n">ch</span><span class="p">...)</span> <span class="n">audio</span><span class="p">.</span><span class="n">data</span><span class="p">[</span><span class="n">ch</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="k">const</span> <span class="kt">uint8_t</span> <span class="o">*</span><span class="p">)</span><span class="n">audio_data</span><span class="p">.</span><span class="n">data</span><span class="p">[</span><span class="n">ch</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">    <span class="n">audio</span><span class="p">.</span><span class="n">samples_per_sec</span> <span class="o">=</span> <span class="n">sample_rate</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">audio</span><span class="p">.</span><span class="n">frames</span> <span class="o">=</span> <span class="mi">1024</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">audio</span><span class="p">.</span><span class="n">format</span> <span class="o">=</span> <span class="n">AUDIO_FORMAT_FLOAT_PLANAR</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">audio</span><span class="p">.</span><span class="n">timestamp</span> <span class="o">=</span> <span class="n">ts</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 🔴 关键：再次调用 obs_source_output_audio！
+</span></span></span><span class="line"><span class="cl">    <span class="c1">// 这会过这个复合源自己的 filter 链，然后 push 到它自己的 deque
+</span></span></span><span class="line"><span class="cl">    <span class="nf">obs_source_output_audio</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">audio</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>这一步的设计很精妙：复合源把子源的 output 累加后，当作&quot;自己的原始音频&quot;，再走一遍 <code>obs_source_output_audio</code> → <code>process_audio</code> → <code>filter_async_audio</code> → push deque。然后路径 3 的 <code>process_audio_source_tick</code> 再从 deque 取出来。这意味着复合源挂的 filter（如总线压缩）会作用于子源的混音结果。</p>
+<h3 id="43-路径-3process_audio_source_tick--从-deque-取数据输出">4.3 路径 3：<code>process_audio_source_tick</code> —— 从 deque 取数据输出
+</h3><div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
+</span><span class="lnt">16
+</span><span class="lnt">17
+</span><span class="lnt">18
+</span><span class="lnt">19
+</span><span class="lnt">20
+</span><span class="lnt">21
+</span><span class="lnt">22
+</span><span class="lnt">23
+</span><span class="lnt">24
+</span><span class="lnt">25
+</span><span class="lnt">26
+</span><span class="lnt">27
+</span><span class="lnt">28
+</span><span class="lnt">29
+</span><span class="lnt">30
+</span><span class="lnt">31
+</span><span class="lnt">32
+</span><span class="lnt">33
+</span><span class="lnt">34
+</span><span class="lnt">35
+</span><span class="lnt">36
+</span><span class="lnt">37
+</span><span class="lnt">38
+</span><span class="lnt">39
+</span><span class="lnt">40
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">static</span> <span class="kt">void</span> <span class="nf">process_audio_source_tick</span><span class="p">(</span><span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">source</span><span class="p">,</span> <span class="kt">uint32_t</span> <span class="n">mixers</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                                       <span class="kt">size_t</span> <span class="n">channels</span><span class="p">,</span> <span class="kt">size_t</span> <span class="n">sample_rate</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                                       <span class="kt">size_t</span> <span class="n">size</span><span class="p">)</span>  <span class="c1">// size = 4096
+</span></span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="nf">pthread_mutex_lock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_buf_mutex</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 检查第一声道有没有攒够 1024 帧
+</span></span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_input_buf</span><span class="p">[</span><span class="mi">0</span><span class="p">].</span><span class="n">size</span> <span class="o">&lt;</span> <span class="n">size</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_pending</span> <span class="o">=</span> <span class="nb">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">pthread_mutex_unlock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_buf_mutex</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span><span class="p">;</span>   <span class="c1">// 数据不够 → 标记 pending → 跳过
+</span></span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// peek（只读不弹）：从 deque 取 4096 字节 = 1024 个 float
+</span></span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">size_t</span> <span class="n">ch</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">ch</span> <span class="o">&lt;</span> <span class="n">channels</span><span class="p">;</span> <span class="n">ch</span><span class="o">++</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">deque_peek_front</span><span class="p">(</span><span class="o">&amp;</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_input_buf</span><span class="p">[</span><span class="n">ch</span><span class="p">],</span>
+</span></span><span class="line"><span class="cl">                         <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_output_buf</span><span class="p">[</span><span class="mi">0</span><span class="p">][</span><span class="n">ch</span><span class="p">],</span> <span class="n">size</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">//                          ↑ 先统一输出到 mix[0]
+</span></span></span><span class="line"><span class="cl">    <span class="nf">pthread_mutex_unlock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_buf_mutex</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 复制到其他 mix，或清零不用的
+</span></span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">size_t</span> <span class="n">mix</span> <span class="o">=</span> <span class="mi">1</span><span class="p">;</span> <span class="n">mix</span> <span class="o">&lt;</span> <span class="n">MAX_AUDIO_MIXES</span><span class="p">;</span> <span class="n">mix</span><span class="o">++</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">((</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_mixers</span> <span class="o">&amp;</span> <span class="n">bit</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span> <span class="o">||</span> <span class="p">(</span><span class="n">mixers</span> <span class="o">&amp;</span> <span class="n">bit</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="c1">// 源不输出到这个 mix，或这个 mix 不活跃 → 清零
+</span></span></span><span class="line"><span class="cl">            <span class="nf">memset</span><span class="p">(</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_output_buf</span><span class="p">[</span><span class="n">mix</span><span class="p">][</span><span class="mi">0</span><span class="p">],</span> <span class="mi">0</span><span class="p">,</span> <span class="n">size</span> <span class="o">*</span> <span class="n">channels</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="c1">// size * channels = 4096 × 2 = 8192（清掉所有声道）
+</span></span></span><span class="line"><span class="cl">        <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="k">for</span> <span class="p">(</span><span class="n">ch</span><span class="p">...)</span> <span class="nf">memcpy</span><span class="p">(</span><span class="n">output_buf</span><span class="p">[</span><span class="n">mix</span><span class="p">][</span><span class="n">ch</span><span class="p">],</span> <span class="n">output_buf</span><span class="p">[</span><span class="mi">0</span><span class="p">][</span><span class="n">ch</span><span class="p">],</span> <span class="n">size</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="c1">// 逐声道拷贝 4096 字节
+</span></span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// mix[0] 自身如果未使用也清零
+</span></span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">((</span><span class="n">audio_mixers</span> <span class="o">&amp;</span> <span class="mi">1</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span> <span class="o">||</span> <span class="p">(</span><span class="n">mixers</span> <span class="o">&amp;</span> <span class="mi">1</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">memset</span><span class="p">(</span><span class="n">output_buf</span><span class="p">[</span><span class="mi">0</span><span class="p">][</span><span class="mi">0</span><span class="p">],</span> <span class="mi">0</span><span class="p">,</span> <span class="n">size</span> <span class="o">*</span> <span class="n">channels</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 应用音量
+</span></span></span><span class="line"><span class="cl">    <span class="nf">apply_audio_volume</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">mixers</span><span class="p">,</span> <span class="n">channels</span><span class="p">,</span> <span class="n">sample_rate</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_pending</span> <span class="o">=</span> <span class="nb">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>这里 <code>size = 4096</code>（1024×4）是<strong>单声道的字节数</strong>。因为 OBS 用 planar 格式，每个声道的 buffer 都是独立的，所以检查只需要检查 <code>audio_input_buf[0].size &gt;= 4096</code>——左声道有 1024 个 float 了，就认为其他声道也够了。</p>
+<hr>
+<h2 id="五缓冲管理时间戳怎么玩">五、缓冲管理：时间戳怎么玩
+</h2><h3 id="51-核心概念">5.1 核心概念
+</h3><div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-fallback" data-lang="fallback"><span class="line"><span class="cl">source-&gt;audio_ts  =  源&#34;已经生产到哪个时间点&#34;（现实墙上时间的纳秒）
+</span></span><span class="line"><span class="cl">ts.start          =  混音窗口&#34;需要从哪个时间点开始的数据&#34;
+</span></span><span class="line"><span class="cl">ts.end            =  混音窗口&#34;需要到哪个时间点&#34;
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>正常情况：<code>source-&gt;audio_ts &gt;= ts.start</code>，源的数据覆盖了 ts 区间，直接渲染。</p>
+<p>落后情况：<code>source-&gt;audio_ts &lt; ts.start</code>，源的数据产得不够快。</p>
+<h3 id="52-动态缓冲add_audio_buffering">5.2 动态缓冲：<code>add_audio_buffering</code>
+</h3><div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
+</span><span class="lnt">16
+</span><span class="lnt">17
+</span><span class="lnt">18
+</span><span class="lnt">19
+</span><span class="lnt">20
+</span><span class="lnt">21
+</span><span class="lnt">22
+</span><span class="lnt">23
+</span><span class="lnt">24
+</span><span class="lnt">25
+</span><span class="lnt">26
+</span><span class="lnt">27
+</span><span class="lnt">28
+</span><span class="lnt">29
+</span><span class="lnt">30
+</span><span class="lnt">31
+</span><span class="lnt">32
+</span><span class="lnt">33
+</span><span class="lnt">34
+</span><span class="lnt">35
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">static</span> <span class="kt">void</span> <span class="nf">add_audio_buffering</span><span class="p">(</span><span class="k">struct</span> <span class="n">obs_core_audio</span> <span class="o">*</span><span class="n">audio</span><span class="p">,</span> <span class="kt">size_t</span> <span class="n">sample_rate</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                                 <span class="k">struct</span> <span class="n">ts_info</span> <span class="o">*</span><span class="n">ts</span><span class="p">,</span> <span class="kt">uint64_t</span> <span class="n">min_ts</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                                 <span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">buffering_name</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="nf">audio_buffering_maxed</span><span class="p">(</span><span class="n">audio</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span><span class="p">;</span>   <span class="c1">// 缓冲已到上限，不再增加
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">audio</span><span class="o">-&gt;</span><span class="n">buffering_wait_ticks</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="n">audio</span><span class="o">-&gt;</span><span class="n">buffered_ts</span> <span class="o">=</span> <span class="n">ts</span><span class="o">-&gt;</span><span class="n">start</span><span class="p">;</span>   <span class="c1">// 记录基准点
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 计算落后的帧数 → 需要几个 Tick 的缓冲
+</span></span></span><span class="line"><span class="cl">    <span class="n">offset</span> <span class="o">=</span> <span class="n">ts</span><span class="o">-&gt;</span><span class="n">start</span> <span class="o">-</span> <span class="n">min_ts</span><span class="p">;</span>                  <span class="c1">// 落后了多少纳秒
+</span></span></span><span class="line"><span class="cl">    <span class="n">frames</span> <span class="o">=</span> <span class="nf">ns_to_audio_frames</span><span class="p">(</span><span class="n">sample_rate</span><span class="p">,</span> <span class="n">offset</span><span class="p">);</span>  <span class="c1">// 折合多少帧
+</span></span></span><span class="line"><span class="cl">    <span class="n">ticks</span>  <span class="o">=</span> <span class="p">(</span><span class="n">frames</span> <span class="o">+</span> <span class="mi">1023</span><span class="p">)</span> <span class="o">/</span> <span class="mi">1024</span><span class="p">;</span>             <span class="c1">// 向上取整，几个 Tick
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 如果超限，截断
+</span></span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">audio</span><span class="o">-&gt;</span><span class="n">total_buffering_ticks</span> <span class="o">+</span> <span class="n">ticks</span> <span class="o">&gt;=</span> <span class="n">max</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">ticks</span> <span class="o">-=</span> <span class="p">(</span><span class="n">total</span> <span class="o">+</span> <span class="n">ticks</span> <span class="o">-</span> <span class="n">max</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="n">audio</span><span class="o">-&gt;</span><span class="n">total_buffering_ticks</span> <span class="o">=</span> <span class="n">max</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">audio</span><span class="o">-&gt;</span><span class="n">total_buffering_ticks</span> <span class="o">+=</span> <span class="n">ticks</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 往 buffered_timestamps 队首插入更早的 ts 区间
+</span></span></span><span class="line"><span class="cl">    <span class="n">new_ts</span><span class="p">.</span><span class="n">start</span> <span class="o">=</span> <span class="n">buffered_ts</span> <span class="o">-</span> <span class="nf">audio_frames_to_ns</span><span class="p">(</span><span class="n">sample_rate</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                         <span class="n">buffering_wait_ticks</span> <span class="o">*</span> <span class="mi">1024</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">while</span> <span class="p">(</span><span class="n">ticks</span><span class="o">--</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="o">++</span><span class="n">buffering_wait_ticks</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">new_ts</span><span class="p">.</span><span class="n">end</span> <span class="o">=</span> <span class="n">new_ts</span><span class="p">.</span><span class="n">start</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">new_ts</span><span class="p">.</span><span class="n">start</span> <span class="o">=</span> <span class="n">buffered_ts</span> <span class="o">-</span> <span class="nf">audio_frames_to_ns</span><span class="p">(</span><span class="n">sample_rate</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                                  <span class="n">buffering_wait_ticks</span> <span class="o">*</span> <span class="mi">1024</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="nf">deque_push_front</span><span class="p">(</span><span class="o">&amp;</span><span class="n">audio</span><span class="o">-&gt;</span><span class="n">buffered_timestamps</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">new_ts</span><span class="p">,</span> <span class="k">sizeof</span><span class="p">(</span><span class="n">new_ts</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="o">*</span><span class="n">ts</span> <span class="o">=</span> <span class="n">new_ts</span><span class="p">;</span>  <span class="c1">// 把当前 ts 也替换成更早的
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>举个具体例子。假设 48kHz，一个源落后了 10ms（约 480 帧）：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
+</span><span class="lnt">16
+</span><span class="lnt">17
+</span><span class="lnt">18
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-fallback" data-lang="fallback"><span class="line"><span class="cl">当前 ts = [12:00:00.100, 12:00:00.121)
+</span></span><span class="line"><span class="cl">落后源 min_ts = 12:00:00.090  ← 源的数据才产到 0.090
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">offset = 0.100 - 0.090 = 10ms = 10,000,000 ns
+</span></span><span class="line"><span class="cl">frames = 10,000,000 × 48000 ÷ 1,000,000,000 = 480
+</span></span><span class="line"><span class="cl">ticks  = (480 + 1023) / 1024 = 1   ← 需要 1 个 Tick 的缓冲
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">buffered_timestamps 变化前:    变化后（队首插入）:
+</span></span><span class="line"><span class="cl">┌───────────────────┐        ┌───────────────────┬───────────────────┐
+</span></span><span class="line"><span class="cl">│ [0.100, 0.121)    │   →    │ [0.079, 0.100)    │ [0.100, 0.121)    │
+</span></span><span class="line"><span class="cl">└───────────────────┘        └───────────────────┴───────────────────┘
+</span></span><span class="line"><span class="cl">                                  队首（下次 peek 取出）
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">ts 也被替换成 [0.079, 0.100)
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">下次 Tick:
+</span></span><span class="line"><span class="cl">  peek_front 取出 [0.079, 0.100)
+</span></span><span class="line"><span class="cl">  source-&gt;audio_ts = 0.090 → 0.090 &gt;= 0.079 → 数据够了！正常渲染
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p><code>buffered_timestamps</code> 是一个双端队列：</p>
+<ul>
+<li>正常时每次 Tick 往<strong>队尾</strong> push 当前 ts，peek <strong>队首</strong>取出的就是当前 ts</li>
+<li>需要缓冲时往<strong>队首</strong> push 更早的 ts，peek 出来就变成了过去的 ts</li>
+<li>等 <code>buffering_wait_ticks</code> 耗尽后，队列恢复为&quot;push 一个 pop 一个&quot;的正常模式</li>
+</ul>
+<h3 id="53-缓冲满了怎么办ignore_audio">5.3 缓冲满了怎么办：<code>ignore_audio</code>
+</h3><p>条件触发：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="nf">audio_buffering_maxed</span><span class="p">(</span><span class="n">audio</span><span class="p">)</span>       <span class="c1">// total_buffering_ticks == max
+</span></span></span><span class="line"><span class="cl">    <span class="o">&amp;&amp;</span> <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_ts</span> <span class="o">!=</span> <span class="mi">0</span>           <span class="c1">// 曾经产过数据
+</span></span></span><span class="line"><span class="cl">    <span class="o">&amp;&amp;</span> <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_ts</span> <span class="o">&lt;</span> <span class="n">ts</span><span class="p">.</span><span class="n">start</span><span class="p">)</span> <span class="p">{</span>  <span class="c1">// 确实落后了
+</span></span></span></code></pre></td></tr></table>
+</div>
+</div><p>对于<strong>采集源</strong>：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
+</span><span class="lnt">16
+</span><span class="lnt">17
+</span><span class="lnt">18
+</span><span class="lnt">19
+</span><span class="lnt">20
+</span><span class="lnt">21
+</span><span class="lnt">22
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">static</span> <span class="kt">bool</span> <span class="nf">ignore_audio</span><span class="p">(</span><span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">source</span><span class="p">,</span> <span class="kt">size_t</span> <span class="n">channels</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                          <span class="kt">size_t</span> <span class="n">sample_rate</span><span class="p">,</span> <span class="kt">uint64_t</span> <span class="n">start_ts</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// 一批数据都没有 → 直接返回
+</span></span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_input_buf</span><span class="p">[</span><span class="mi">0</span><span class="p">].</span><span class="n">size</span><span class="p">)</span> <span class="k">return</span> <span class="nb">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 计算要丢弃多少帧
+</span></span></span><span class="line"><span class="cl">    <span class="kt">size_t</span> <span class="n">drop</span> <span class="o">=</span> <span class="p">(</span><span class="n">start_ts</span> <span class="o">-</span> <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_ts</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="o">*</span> <span class="n">sample_rate</span> <span class="o">/</span> <span class="mf">1e9</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">drop</span> <span class="o">&gt;</span> <span class="n">deque_里的</span><span class="p">)</span> <span class="n">drop</span> <span class="o">=</span> <span class="n">deque_里的</span><span class="p">;</span>  <span class="c1">// 最多全丢
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 逐声道 pop
+</span></span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="n">ch</span><span class="p">...)</span> <span class="nf">deque_pop_front</span><span class="p">(</span><span class="o">&amp;</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_input_buf</span><span class="p">[</span><span class="n">ch</span><span class="p">],</span> <span class="nb">NULL</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                                  <span class="n">drop</span> <span class="o">*</span> <span class="k">sizeof</span><span class="p">(</span><span class="kt">float</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 推进时间戳
+</span></span></span><span class="line"><span class="cl">    <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_ts</span> <span class="o">+=</span> <span class="n">drop</span> <span class="o">*</span> <span class="mf">1e9</span> <span class="o">/</span> <span class="n">sample_rate</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 追上了？
+</span></span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_ts</span> <span class="o">&gt;=</span> <span class="n">start_ts</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="nb">true</span><span class="p">;</span>   <span class="c1">// → 重新渲染（rerender）
+</span></span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="nb">false</span><span class="p">;</span>      <span class="c1">// → 还是不够，标记 pending
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>对于<strong>渲染型音源</strong>（媒体文件）：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="c1">// 没法 pop deque，因为数据不是在 deque 里的
+</span></span></span><span class="line"><span class="cl"><span class="c1">// 只能标记 pending，跳过本次混音
+</span></span></span><span class="line"><span class="cl"><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_pending</span> <span class="o">=</span> <span class="nb">true</span><span class="p">;</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>为什么不能丢？两个原因：</p>
+<ol>
+<li>A/V 同步：媒体的音频帧和视频帧是配对好的，丢了音频声音和画面对不上</li>
+<li>内部状态：媒体源的数据是调用 <code>audio_render</code> 回调当场生成的，外部没法用 <code>deque_pop_front</code> 方式干预</li>
+</ol>
+<p>渲染型源&quot;追上来&quot;的方式是：每次 Tick 都调 <code>audio_render</code>，即使数据被标记 pending 丢弃了，源内部的解码位置还是往前推进了。如果解码速度 ≥ 实时，终归能追上（audio_ts 会逐渐靠近 ts.start）。</p>
+<p>但如果解码就是跟不上（CPU 太忙），就会一直 pending，用户听到的就是音频卡顿/断断续续。直到 CPU 负载降低或用户重启源。</p>
+<h3 id="54-discard_audio--消费已用数据">5.4 <code>discard_audio</code> —— 消费已用数据
+</h3><p>缓冲管理和丢弃落后数据之后，<code>audio_callback</code> 的 Step 8 遍历所有源，把 input buffer 里已经被混音覆盖的部分弹掉：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
+</span><span class="lnt">16
+</span><span class="lnt">17
+</span><span class="lnt">18
+</span><span class="lnt">19
+</span><span class="lnt">20
+</span><span class="lnt">21
+</span><span class="lnt">22
+</span><span class="lnt">23
+</span><span class="lnt">24
+</span><span class="lnt">25
+</span><span class="lnt">26
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">static</span> <span class="kt">void</span> <span class="nf">discard_audio</span><span class="p">(</span><span class="k">struct</span> <span class="n">obs_core_audio</span> <span class="o">*</span><span class="n">audio</span><span class="p">,</span> <span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">source</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                           <span class="kt">size_t</span> <span class="n">channels</span><span class="p">,</span> <span class="kt">size_t</span> <span class="n">sample_rate</span><span class="p">,</span> <span class="k">struct</span> <span class="n">ts_info</span> <span class="o">*</span><span class="n">ts</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// 渲染型音源 → 不管，它们没有 deque
+</span></span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">info</span><span class="p">.</span><span class="n">audio_render</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_ts</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// ts 区间后的数据才保留，前面的全弹出
+</span></span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_ts</span> <span class="o">&lt;</span> <span class="n">ts</span><span class="o">-&gt;</span><span class="n">start</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// 源落后了，但缓冲还有，先不弹
+</span></span></span><span class="line"><span class="cl">        <span class="k">return</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 计算需要保留的起始偏移
+</span></span></span><span class="line"><span class="cl">    <span class="kt">size_t</span> <span class="n">start_point</span> <span class="o">=</span> <span class="p">(</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_ts</span> <span class="o">==</span> <span class="n">ts</span><span class="o">-&gt;</span><span class="n">start</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="o">?</span> <span class="mi">0</span> <span class="o">:</span> <span class="nf">convert_time_to_frames</span><span class="p">(</span><span class="n">sample_rate</span><span class="p">,</span> <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_ts</span> <span class="o">-</span> <span class="n">ts</span><span class="o">-&gt;</span><span class="n">start</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kt">size_t</span> <span class="n">discard_size</span> <span class="o">=</span> <span class="p">(</span><span class="mi">1024</span> <span class="o">-</span> <span class="n">start_point</span><span class="p">)</span> <span class="o">*</span> <span class="k">sizeof</span><span class="p">(</span><span class="kt">float</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 逐声道弹出已消费帧
+</span></span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="n">ch</span><span class="p">...)</span> <span class="nf">deque_pop_front</span><span class="p">(</span><span class="o">&amp;</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_input_buf</span><span class="p">[</span><span class="n">ch</span><span class="p">],</span> <span class="nb">NULL</span><span class="p">,</span> <span class="n">discard_size</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">source</span><span class="o">-&gt;</span><span class="n">audio_ts</span> <span class="o">=</span> <span class="n">ts</span><span class="o">-&gt;</span><span class="n">end</span><span class="p">;</span>  <span class="c1">// 推进到 ts 窗口末尾
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><hr>
+<h2 id="六监控去重消音">六、监控去重消音
+</h2><p>当用户既启用了音频监控（在耳机里听自己的声音），又添加了&quot;音频输出采集&quot;源（采集桌面声音），且两者指向同一设备时，会产生回声。</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
+</span><span class="lnt">16
+</span><span class="lnt">17
+</span><span class="lnt">18
+</span><span class="lnt">19
+</span><span class="lnt">20
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">static</span> <span class="kt">bool</span> <span class="nf">should_silence_monitored_source</span><span class="p">(</span><span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">source</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                                              <span class="k">struct</span> <span class="n">obs_core_audio</span> <span class="o">*</span><span class="n">audio</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">obs_source_t</span> <span class="o">*</span><span class="n">dup_src</span> <span class="o">=</span> <span class="n">audio</span><span class="o">-&gt;</span><span class="n">monitoring_duplicating_source</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">dup_src</span> <span class="o">||</span> <span class="o">!</span><span class="n">active</span><span class="p">)</span>        <span class="k">return</span> <span class="nb">false</span><span class="p">;</span>  <span class="c1">// 没有重复采集源
+</span></span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">dup_src</span><span class="o">-&gt;</span><span class="n">monitoring_type</span> <span class="o">==</span> <span class="n">MONITOR_ONLY</span><span class="p">)</span>  <span class="k">return</span> <span class="nb">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// 输出采集源没静音且推子不为零
+</span></span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">unmuted</span> <span class="o">=</span> <span class="o">!</span><span class="n">dup_src</span><span class="o">-&gt;</span><span class="n">muted</span> <span class="o">&amp;&amp;</span> <span class="n">volume</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">unmuted</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// 这个 source 同时送往了&#34;输出&#34;和&#34;监控&#34;
+</span></span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">source</span><span class="o">-&gt;</span><span class="n">monitoring_type</span> <span class="o">==</span> <span class="n">MONITOR_AND_OUTPUT</span>
+</span></span><span class="line"><span class="cl">            <span class="o">&amp;&amp;</span> <span class="n">source</span> <span class="o">!=</span> <span class="n">dup_src</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="nb">true</span><span class="p">;</span>  <span class="c1">// 需要消音
+</span></span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="nb">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>消音动作：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span><span class="lnt">4
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="nf">clear_audio_output_buf</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">audio</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// → memset(source-&gt;audio_output_buf[mix][ch], 0, 1024 * sizeof(float))
+</span></span></span><span class="line"><span class="cl"><span class="c1">// → 输出采集源&#34;听不到&#34;这个 source 了，避免回声
+</span></span></span><span class="line"><span class="cl"><span class="c1">// → 但监控本身不受影响（监控走的是 audio_capture_callback，不经过 output_buf）
+</span></span></span></code></pre></td></tr></table>
+</div>
+</div><hr>
+<h2 id="七平台采集线程细节">七、平台采集线程细节
+</h2><h3 id="71-windows-wasapi">7.1 Windows WASAPI
+</h3><p>两个线程（RTWQ 不可用时）：</p>
+<p><strong>采集线程</strong> <code>WASAPISource::CaptureThread</code>：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
+</span><span class="lnt">16
+</span><span class="lnt">17
+</span><span class="lnt">18
+</span><span class="lnt">19
+</span><span class="lnt">20
+</span><span class="lnt">21
+</span><span class="lnt">22
+</span><span class="lnt">23
+</span><span class="lnt">24
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-cpp" data-lang="cpp"><span class="line"><span class="cl"><span class="c1">// 创建（构造函数中）
+</span></span></span><span class="line"><span class="cl"><span class="n">captureThread</span> <span class="o">=</span> <span class="n">CreateThread</span><span class="p">(</span><span class="k">nullptr</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">WASAPISource</span><span class="o">::</span><span class="n">CaptureThread</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                              <span class="k">this</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="k">nullptr</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">os_set_thread_name</span><span class="p">(</span><span class="s">&#34;win-wasapi: capture thread&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">AvSetMmThreadCharacteristics</span><span class="p">(</span><span class="sa">L</span><span class="s">&#34;Audio&#34;</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">unused</span><span class="p">);</span>  <span class="c1">// MMCSS Audio 优先级
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// 主循环等待 4 个信号
+</span></span></span><span class="line"><span class="cl"><span class="n">HANDLE</span> <span class="n">sigs</span><span class="p">[]</span> <span class="o">=</span> <span class="p">{</span><span class="n">exitSignal</span><span class="p">,</span> <span class="n">stopSignal</span><span class="p">,</span> <span class="n">receiveSignal</span><span class="p">,</span> <span class="n">restartSignal</span><span class="p">};</span>
+</span></span><span class="line"><span class="cl"><span class="c1">//  - exitSignal:   析构时触发
+</span></span></span><span class="line"><span class="cl"><span class="c1">//  - stopSignal:   场景切换/停用时触发
+</span></span></span><span class="line"><span class="cl"><span class="c1">//  - receiveSignal: WASAPI 通知有音频数据
+</span></span></span><span class="line"><span class="cl"><span class="c1">//  - restartSignal: 用户换了设备
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// 收到 receiveSignal 时：
+</span></span></span><span class="line"><span class="cl"><span class="n">ProcessCaptureData</span><span class="p">()</span><span class="o">:</span>
+</span></span><span class="line"><span class="cl">    <span class="k">while</span> <span class="p">(</span><span class="n">capture</span><span class="o">-&gt;</span><span class="n">GetNextPacketSize</span><span class="p">(</span><span class="o">&amp;</span><span class="n">captureSize</span><span class="p">))</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">capture</span><span class="o">-&gt;</span><span class="n">GetBuffer</span><span class="p">(</span><span class="o">&amp;</span><span class="n">buffer</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">frames</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">flags</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">pos</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">ts</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="n">obs_source_audio</span> <span class="n">data</span> <span class="o">=</span> <span class="p">{};</span>
+</span></span><span class="line"><span class="cl">        <span class="n">data</span><span class="p">.</span><span class="n">data</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">buffer</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">data</span><span class="p">.</span><span class="n">frames</span> <span class="o">=</span> <span class="n">frames</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">data</span><span class="p">.</span><span class="n">timestamp</span> <span class="o">=</span> <span class="n">useDeviceTiming</span> <span class="o">?</span> <span class="n">ts</span> <span class="o">*</span> <span class="mi">100</span> <span class="o">:</span> <span class="n">os_gettime_ns</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="n">obs_source_output_audio</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">data</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="n">capture</span><span class="o">-&gt;</span><span class="n">ReleaseBuffer</span><span class="p">(</span><span class="n">frames</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p><strong>重连线程</strong> <code>WASAPISource::ReconnectThread</code>：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-cpp" data-lang="cpp"><span class="line"><span class="cl"><span class="c1">// 创建（Activate 时）
+</span></span></span><span class="line"><span class="cl"><span class="n">reconnectThread</span> <span class="o">=</span> <span class="n">CreateThread</span><span class="p">(</span><span class="k">nullptr</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">WASAPISource</span><span class="o">::</span><span class="n">ReconnectThread</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                                <span class="k">this</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="k">nullptr</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">os_set_thread_name</span><span class="p">(</span><span class="s">&#34;win-wasapi: reconnect thread&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// 主循环
+</span></span></span><span class="line"><span class="cl"><span class="k">while</span> <span class="p">(</span><span class="o">!</span><span class="n">exit</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">WaitForMultipleObjects</span><span class="p">({</span><span class="n">reconnectExitSignal</span><span class="p">,</span> <span class="n">reconnectSignal</span><span class="p">});</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="err">收到</span> <span class="n">reconnectSignal</span> <span class="o">&amp;&amp;</span> <span class="n">reconnectDuration</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="n">Wait</span><span class="p">(</span><span class="err">冷却时间</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">source</span><span class="o">-&gt;</span><span class="n">Start</span><span class="p">();</span>  <span class="c1">// 触发重新初始化
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>RTWQ（Real-Time Work Queue）可用时（Win10 1703+），采集线程不创建，改用 <code>RtwqPutWaitingWorkItem</code> 把工作提交到系统工作队列。</p>
+<h3 id="72-macos-coreaudio">7.2 macOS CoreAudio
+</h3><p>CoreAudio 使用 <code>AudioUnit</code> 的 I/O 回调，<strong>不创建独立的采集线程</strong>——音频数据在 CoreAudio 内部的实时 I/O 线程上收到：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span><span class="lnt">4
+</span><span class="lnt">5
+</span><span class="lnt">6
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="k">static</span> <span class="n">OSStatus</span> <span class="nf">input_callback</span><span class="p">(</span><span class="kt">void</span> <span class="o">*</span><span class="n">data</span><span class="p">,</span> <span class="p">...)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="nf">AudioUnitRender</span><span class="p">(</span><span class="n">ca</span><span class="o">-&gt;</span><span class="n">unit</span><span class="p">,</span> <span class="p">...,</span> <span class="n">ca</span><span class="o">-&gt;</span><span class="n">buf_list</span><span class="p">);</span>   <span class="c1">// 从设备取数据
+</span></span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="n">i</span><span class="p">..)</span> <span class="n">audio</span><span class="p">.</span><span class="n">data</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">ca</span><span class="o">-&gt;</span><span class="n">buf_list</span><span class="o">-&gt;</span><span class="n">mBuffers</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">mData</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">audio</span><span class="p">.</span><span class="n">timestamp</span> <span class="o">=</span> <span class="nf">AudioConvertHostTimeToNanos</span><span class="p">(</span><span class="n">ts_data</span><span class="o">-&gt;</span><span class="n">mHostTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="nf">obs_source_output_audio</span><span class="p">(</span><span class="n">ca</span><span class="o">-&gt;</span><span class="n">source</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">audio</span><span class="p">);</span>     <span class="c1">// 推入管线
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>重连线程：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span><span class="lnt">4
+</span><span class="lnt">5
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="c1">// 设备断开/格式变化时 → coreaudio_begin_reconnect
+</span></span></span><span class="line"><span class="cl"><span class="k">static</span> <span class="kt">void</span> <span class="o">*</span><span class="nf">reconnect_thread</span><span class="p">(</span><span class="kt">void</span> <span class="o">*</span><span class="n">param</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">while</span> <span class="p">(</span><span class="nf">os_event_timedwait</span><span class="p">(</span><span class="n">exit_event</span><span class="p">,</span> <span class="n">retry_time</span><span class="p">)</span> <span class="o">==</span> <span class="n">ETIMEDOUT</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="nf">coreaudio_init</span><span class="p">(</span><span class="n">ca</span><span class="p">))</span> <span class="k">break</span><span class="p">;</span>   <span class="c1">// 重试成功
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><h3 id="73-linux-pulseaudio">7.3 Linux PulseAudio
+</h3><p>PulseAudio 使用 <code>pa_threaded_mainloop</code>——PulseAudio 库内部创建一个事件循环线程。OBS 不创建 pthread，而是注册回调：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="c1">// pulse_init() 时
+</span></span></span><span class="line"><span class="cl"><span class="n">pulse_mainloop</span> <span class="o">=</span> <span class="nf">pa_threaded_mainloop_new</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="nf">pa_threaded_mainloop_start</span><span class="p">(</span><span class="n">pulse_mainloop</span><span class="p">);</span>   <span class="c1">// ← PA 内部线程启动
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// 注册读取回调
+</span></span></span><span class="line"><span class="cl"><span class="nf">pa_stream_set_read_callback</span><span class="p">(</span><span class="n">stream</span><span class="p">,</span> <span class="n">pulse_stream_read</span><span class="p">,</span> <span class="n">data</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// PA 线程在有数据时调用此回调
+</span></span></span><span class="line"><span class="cl"><span class="k">static</span> <span class="kt">void</span> <span class="nf">pulse_stream_read</span><span class="p">(</span><span class="n">pa_stream</span> <span class="o">*</span><span class="n">p</span><span class="p">,</span> <span class="kt">size_t</span> <span class="n">nbytes</span><span class="p">,</span> <span class="kt">void</span> <span class="o">*</span><span class="n">userdata</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="nf">pa_stream_peek</span><span class="p">(</span><span class="n">data</span><span class="o">-&gt;</span><span class="n">stream</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">frames</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">bytes</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="nf">obs_source_output_audio</span><span class="p">(</span><span class="n">data</span><span class="o">-&gt;</span><span class="n">source</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">out</span><span class="p">);</span>  <span class="c1">// 直接推入
+</span></span></span><span class="line"><span class="cl">    <span class="nf">pa_stream_drop</span><span class="p">(</span><span class="n">data</span><span class="o">-&gt;</span><span class="n">stream</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><hr>
+<h2 id="八完整数据流从采集到编码监控">八、完整数据流（从采集到编码/监控）
+</h2><p>把前面所有环节串起来，整个音频数据的流动全景如下：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt"> 1
+</span><span class="lnt"> 2
+</span><span class="lnt"> 3
+</span><span class="lnt"> 4
+</span><span class="lnt"> 5
+</span><span class="lnt"> 6
+</span><span class="lnt"> 7
+</span><span class="lnt"> 8
+</span><span class="lnt"> 9
+</span><span class="lnt">10
+</span><span class="lnt">11
+</span><span class="lnt">12
+</span><span class="lnt">13
+</span><span class="lnt">14
+</span><span class="lnt">15
+</span><span class="lnt">16
+</span><span class="lnt">17
+</span><span class="lnt">18
+</span><span class="lnt">19
+</span><span class="lnt">20
+</span><span class="lnt">21
+</span><span class="lnt">22
+</span><span class="lnt">23
+</span><span class="lnt">24
+</span><span class="lnt">25
+</span><span class="lnt">26
+</span><span class="lnt">27
+</span><span class="lnt">28
+</span><span class="lnt">29
+</span><span class="lnt">30
+</span><span class="lnt">31
+</span><span class="lnt">32
+</span><span class="lnt">33
+</span><span class="lnt">34
+</span><span class="lnt">35
+</span><span class="lnt">36
+</span><span class="lnt">37
+</span><span class="lnt">38
+</span><span class="lnt">39
+</span><span class="lnt">40
+</span><span class="lnt">41
+</span><span class="lnt">42
+</span><span class="lnt">43
+</span><span class="lnt">44
+</span><span class="lnt">45
+</span><span class="lnt">46
+</span><span class="lnt">47
+</span><span class="lnt">48
+</span><span class="lnt">49
+</span><span class="lnt">50
+</span><span class="lnt">51
+</span><span class="lnt">52
+</span><span class="lnt">53
+</span><span class="lnt">54
+</span><span class="lnt">55
+</span><span class="lnt">56
+</span><span class="lnt">57
+</span><span class="lnt">58
+</span><span class="lnt">59
+</span><span class="lnt">60
+</span><span class="lnt">61
+</span><span class="lnt">62
+</span><span class="lnt">63
+</span><span class="lnt">64
+</span><span class="lnt">65
+</span><span class="lnt">66
+</span><span class="lnt">67
+</span><span class="lnt">68
+</span><span class="lnt">69
+</span><span class="lnt">70
+</span><span class="lnt">71
+</span><span class="lnt">72
+</span><span class="lnt">73
+</span><span class="lnt">74
+</span><span class="lnt">75
+</span><span class="lnt">76
+</span><span class="lnt">77
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-fallback" data-lang="fallback"><span class="line"><span class="cl">┌─────────────────────────────────────────────────────────┐
+</span></span><span class="line"><span class="cl">│ 采集线程（各平台实现）                                     │
+</span></span><span class="line"><span class="cl">│                                                         │
+</span></span><span class="line"><span class="cl">│ WASAPI CaptureThread / CoreAudio input_callback         │
+</span></span><span class="line"><span class="cl">│ / PulseAudio stream_read / ALSA listen / OSS reader    │
+</span></span><span class="line"><span class="cl">│   │                                                     │
+</span></span><span class="line"><span class="cl">│   │ obs_source_output_audio(source, &amp;raw_audio)        │
+</span></span><span class="line"><span class="cl">│   │   ├── process_audio(source, &amp;audio)                 │
+</span></span><span class="line"><span class="cl">│   │   │     ├── reset_resampler (如果格式变了)           │
+</span></span><span class="line"><span class="cl">│   │   │     ├── audio_resampler_resample (格式转换)      │
+</span></span><span class="line"><span class="cl">│   │   │     ├── process_audio_balancing (左右平衡)      │
+</span></span><span class="line"><span class="cl">│   │   │     └── downmix_to_mono_planar (强制单声道)     │
+</span></span><span class="line"><span class="cl">│   │   ├── filter_async_audio(source, &amp;audio)            │
+</span></span><span class="line"><span class="cl">│   │   │     └── for each filter:                        │
+</span></span><span class="line"><span class="cl">│   │   │           filter-&gt;info.filter_audio(in) → out   │
+</span></span><span class="line"><span class="cl">│   │   └── source_output_audio_data(source, &amp;data)       │
+</span></span><span class="line"><span class="cl">│   │         └── deque_push_back(audio_input_buf[ch],    │
+</span></span><span class="line"><span class="cl">│   │                               data, frames*4)       │
+</span></span><span class="line"><span class="cl">│   ▼                                                     │
+</span></span><span class="line"><span class="cl">│ source-&gt;audio_input_buf[0..7]  (每声道一个 deque)       │
+</span></span><span class="line"><span class="cl">└─────────────────────┬───────────────────────────────────┘
+</span></span><span class="line"><span class="cl">                      │
+</span></span><span class="line"><span class="cl">                      ▼
+</span></span><span class="line"><span class="cl">┌─────────────────────────────────────────────────────────┐
+</span></span><span class="line"><span class="cl">│ audio-io 线程 (每 Tick = 1024 帧 = ~21.33ms)             │
+</span></span><span class="line"><span class="cl">│                                                         │
+</span></span><span class="line"><span class="cl">│ input_and_output(audio, audio_time, prev_time)          │
+</span></span><span class="line"><span class="cl">│   │                                                     │
+</span></span><span class="line"><span class="cl">│   ├─ 扫描活跃 mix (哪些有 consumer)                      │
+</span></span><span class="line"><span class="cl">│   ├─ 清零 mix-&gt;buffer (32KB × 6)                        │
+</span></span><span class="line"><span class="cl">│   │                                                     │
+</span></span><span class="line"><span class="cl">│   ├─ audio_callback(param, prev_time, audio_time, ...) │
+</span></span><span class="line"><span class="cl">│   │   │                                                 │
+</span></span><span class="line"><span class="cl">│   │   ├─ buffered_timestamps: push 当前 ts, peek 队首   │
+</span></span><span class="line"><span class="cl">│   │   │   (有缓冲时 peek 出来的是更早的 ts)              │
+</span></span><span class="line"><span class="cl">│   │   │                                                 │
+</span></span><span class="line"><span class="cl">│   │   ├─ 构建渲染树                                      │
+</span></span><span class="line"><span class="cl">│   │   │   ├─ 遍历 scene/view channel → 递归枚举子源     │
+</span></span><span class="line"><span class="cl">│   │   │   ├─ push_audio_tree2 (处理重复源)              │
+</span></span><span class="line"><span class="cl">│   │   │   ├─ 遍历全局音源链表                            │
+</span></span><span class="line"><span class="cl">│   │   │   → render_order (有序) + root_nodes (顶层)     │
+</span></span><span class="line"><span class="cl">│   │   │                                                 │
+</span></span><span class="line"><span class="cl">│   │   ├─ 渲染每个 source (按 render_order 顺序)          │
+</span></span><span class="line"><span class="cl">│   │   │   ├─ obs_source_audio_render:                   │
+</span></span><span class="line"><span class="cl">│   │   │   │   ├─ 渲染型音源 → custom_audio_render       │
+</span></span><span class="line"><span class="cl">│   │   │   │   │     └─ source-&gt;info.audio_render()      │
+</span></span><span class="line"><span class="cl">│   │   │   │   │        当场生成 1024 帧                  │
+</span></span><span class="line"><span class="cl">│   │   │   │   ├─ 复合源 → audio_submix                  │
+</span></span><span class="line"><span class="cl">│   │   │   │   │     └─ 累加子源 output_buf              │
+</span></span><span class="line"><span class="cl">│   │   │   │   │     └─ obs_source_output_audio(self)   │
+</span></span><span class="line"><span class="cl">│   │   │   │   │        过自己的 filter → push deque     │
+</span></span><span class="line"><span class="cl">│   │   │   │   └─ → process_audio_source_tick            │
+</span></span><span class="line"><span class="cl">│   │   │   │         deque_peek_front → output_buf       │
+</span></span><span class="line"><span class="cl">│   │   │   │         memcpy 到各 mix → apply_volume      │
+</span></span><span class="line"><span class="cl">│   │   │   │                                             │
+</span></span><span class="line"><span class="cl">│   │   │   ├─ 监控去重消音 (should_silence)              │
+</span></span><span class="line"><span class="cl">│   │   │   └─ 落后检测 (buffering_maxed &amp;&amp; audio_ts落后) │
+</span></span><span class="line"><span class="cl">│   │   │       ├─ 采集源 → ignore_audio (pop deque)      │
+</span></span><span class="line"><span class="cl">│   │   │       └─ 渲染源 → pending (跳过混音)            │
+</span></span><span class="line"><span class="cl">│   │   │                                                 │
+</span></span><span class="line"><span class="cl">│   │   ├─ 缓冲管理                                       │
+</span></span><span class="line"><span class="cl">│   │   │   ├─ calc_min_ts (找最落后的源)                 │
+</span></span><span class="line"><span class="cl">│   │   │   └─ add_audio_buffering (往队首插旧 ts)        │
+</span></span><span class="line"><span class="cl">│   │   │                                                 │
+</span></span><span class="line"><span class="cl">│   │   ├─ mix_audio (root_nodes → 累加到 mix buffer)     │
+</span></span><span class="line"><span class="cl">│   │   ├─ discard_audio (弹出已消费数据)                  │
+</span></span><span class="line"><span class="cl">│   │   └─ execute_audio_tasks (OBS_TASK_AUDIO 任务)     │
+</span></span><span class="line"><span class="cl">│   │                                                     │
+</span></span><span class="line"><span class="cl">│   ├─ clamp_audio_output ([-1.0, 1.0])                  │
+</span></span><span class="line"><span class="cl">│   └─ do_audio_output (逐 consumer 分发)                 │
+</span></span><span class="line"><span class="cl">│       ├─ 选择 clamped / unclamped buffer                │
+</span></span><span class="line"><span class="cl">│       ├─ 需要时重采样                                   │
+</span></span><span class="line"><span class="cl">│       └─ input-&gt;callback(param, mix_idx, &amp;data)        │
+</span></span><span class="line"><span class="cl">│           ├─ receive_audio(encoder) → buffer_audio      │
+</span></span><span class="line"><span class="cl">│           │     → deque_push_back → do_encode           │
+</span></span><span class="line"><span class="cl">│           └─ on_audio_playback(monitor) → 平台播放      │
+</span></span><span class="line"><span class="cl">└─────────────────────────────────────────────────────────┘
+</span></span></code></pre></td></tr></table>
+</div>
+</div><hr>
+<h2 id="九一些容易踩的命名坑">九、一些容易踩的命名坑
+</h2><ul>
+<li><strong><code>obs_core_data</code></strong> 不是&quot;音频数据&quot;——它是全局对象注册中心，all sources/outputs/encoders/displays 的链表头都在里面。<code>audio_callback</code> 只用了 <code>first_audio_source</code> 和 <code>audio_sources_mutex</code></li>
+<li><strong><code>audio_callback</code></strong> 不是采集回调——采集回调是各平台的 WASAPI/CoreAudio/PulseAudio 回调。<code>audio_callback</code> 是混音引擎的入口</li>
+<li><strong><code>input_callback</code></strong> 的命名是从 <code>audio_output</code> 模块视角看的——&ldquo;你给我输入数据&rdquo;，所以叫 input。对 OBS 整体来说它是混音渲染核心</li>
+<li><strong><code>audio_size = 1024 × sizeof(float)</code></strong> 是<strong>单声道的字节数</strong>，因为 OBS 内部用 planar 格式，每个声道独立 buffer</li>
+<li><strong><code>block_size</code></strong> 也是单声道单采样点字节数，planar float 下 = 4</li>
+</ul>
 <hr>
 <h2 id="小结">小结
-</h2><p>读音频子系统的这几天，最大的感受是 OBS 的音频架构和视频管线在思路上高度对称——都有独立的核心时钟线程、都有按需消费的机制、都用 deque 做缓冲解耦。几个关键设计值得记住：</p>
+</h2><p>读音频子系统的这几天，最大的感受是和视频管线在思路上高度对称——都有独立的核心时钟线程、都有按需消费的机制、都用 deque 做缓冲解耦。OBS 音频子系统的设计可以用几个词概括：</p>
 <ul>
-<li><strong>一个核心时钟</strong>（audio-io 线程，固定 1024 帧节奏，永不漂移）</li>
-<li><strong>多个生产者</strong>（各平台采集线程，用 <code>obs_source_output_audio</code> 统一入口推数据）</li>
-<li><strong>每源一个 deque</strong> 做缓冲解耦</li>
-<li><strong>6 个 mix</strong> 支持多轨输出</li>
-<li><strong>动态缓冲</strong>用延迟换稳定性（缓冲未满拉回 ts，缓冲满后才丢数据）</li>
-<li><strong>Filter 链</strong>在 source 层面独立（单一源和复合源各管各的 filter 层）</li>
+<li><strong>一个时钟</strong>：audio-io 线程，固定 1024 帧节奏，从 <code>start_time</code> 绝对推导，永不漂移</li>
+<li><strong>N 个生产者</strong>：各平台采集线程，通过 <code>obs_source_output_audio</code> 统一入口推 deque</li>
+<li><strong>每源一个 deque</strong>：环形双端队列解耦生产者和消费者</li>
+<li><strong>两级缓冲</strong>：动态缓冲用延迟换稳定性（缓冲未满拉回 ts → 缓冲满后才丢数据 / pending）</li>
+<li><strong>两层 filter</strong>：子源 filter（单路处理）+ 复合源 filter（总线处理），各管各的</li>
+<li><strong>6 个 mix</strong>：多轨输出的基础，每个 source 的 <code>audio_mixers</code> 决定去哪些轨道</li>
 </ul>
-<p>理解了这些，OBS 音频的骨架也就清楚了。</p>
+<p>理解了这些，再去看 WASAPI/PulseAudio/CoreAudio 的具体实现、音频编码器、监控输出，就都有清晰的上下文了。</p>
 <hr>
 <p>学习过程中参考了 OBS Studio 官方源码仓库，感谢开源社区。如有理解偏差，欢迎指正交流。</p>
 
