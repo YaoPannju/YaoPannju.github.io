@@ -1,17 +1,17 @@
 ---
-title: "OBS Studio 源码学习（三）：音频线程梳理"
-description: "从 audio_output_open 到 input_and_output，完整梳理 OBS 音频子系统：核心线程主循环、音频树构建、obs_source_output_audio 全流程、动态缓冲机制、以及多平台采集线程的数据流全景。"
-date: 2026-07-16
-tags: ["OBS", "源码学习", "C++", "obs-studio"]
+title: "OBS Studio 源码学习（三）：音频线程深度梳理"
+description: "从 audio_output_open 到 input_and_output，再到 audio_callback 内部六阶段的逐帧拆解：覆盖核心线程主循环、buffered_timestamps 时钟队列、音频树构建、三路径单源渲染、缓冲管理完整机制、采集入队全流程、以及多平台采集线程的数据流全景。"
+date: 2026-07-23
+tags: ["OBS", "源码学习", "C++", "obs-studio", "音频"]
 categories: ["OBS Studio源码学习"]
 image: ""
 ---
 
-前两篇分别梳理了主线程启动流程和图形渲染管线，这篇来看音频子系统。这篇文章是我在啃音频相关源码时的学习笔记，以初学者的第一视角记录了整个学习过程。全篇围绕"数据从哪来、经过谁、到哪去"这条主线，把采集线程、音频树构建、混音渲染、缓冲管理等细节逐一拆开。建议配合前两篇一起看。
+前两篇分别梳理了主线程启动流程和图形渲染管线，这篇来看音频子系统。文章以"数据从哪来、经过谁、到哪去"为主线，先建立整体框架（线程启动、主循环、四阶段处理模型），再逐层深入 `audio_callback` 内部的六个阶段、缓冲管理的完整机制、以及各路数据如何汇入和流出。全篇综合了两轮源码阅读的笔记，建议配合前两篇一起看。
 
 ---
 
-## 一、核心线程的启动和主循环
+## 一、核心线程的启动与主循环
 
 ### 1.1 启动链路
 
@@ -34,11 +34,12 @@ obs_reset_audio2()                                   [libobs/obs.c:1617]
 ```
 
 几个初始化细节值得注意：
-- `block_size` 是**一个采样点的单声道字节数**，OBS 内部用 `AUDIO_FORMAT_FLOAT_PLANAR`（声道分离的 float），所以 `block_size = sizeof(float) = 4`
-- `planes` 在 planar 格式下等于声道数，意思是"声道数 = 独立缓冲区数"
-- `set_audio_thread` 这个 task 推入队列后，会在第一次 `audio_callback` 末尾的 `execute_audio_tasks()` 里被执行，把 `THREAD_LOCAL is_audio_thread = true` 设好，之后 `obs_queue_task(OBS_TASK_AUDIO, ...)` 就能判断自己是否已经在音频线程上
 
-### 1.2 主循环
+- `block_size` 是**一个采样点的单声道字节数**。OBS 内部用 `AUDIO_FORMAT_FLOAT_PLANAR`（声道分离的 float），所以 `block_size = sizeof(float) = 4`
+- `planes` 在 planar 格式下等于声道数——"声道数 = 独立缓冲区数"
+- `set_audio_thread` 这个 task 推入队列后，在第一次 `audio_callback` 末尾的 `execute_audio_tasks()` 里被执行，把 `THREAD_LOCAL is_audio_thread = true` 设好。之后 `obs_queue_task(OBS_TASK_AUDIO, ...)` 就能判断自己是否已经在音频线程上
+
+### 1.2 主循环：永不漂移的时钟
 
 ```c
 static void *audio_thread(void *param)
@@ -83,7 +84,7 @@ static inline uint64_t audio_frames_to_ns(size_t sample_rate, uint64_t frames)
 
 推算一下：
 
-| 迭代 | samples | 计算 | audio_time - start_time | 
+| 迭代 | samples | 计算 | audio_time - start_time |
 |------|---------|------|------------------------|
 | 1 | 1024 | 1024 × 10⁹ ÷ 48000 | 21,333,333 ns (21.33 ms) |
 | 2 | 2048 | 2048 × 10⁹ ÷ 48000 | 42,666,666 ns (42.67 ms) |
@@ -91,7 +92,7 @@ static inline uint64_t audio_frames_to_ns(size_t sample_rate, uint64_t frames)
 
 一次 Tick 的时间预算：48kHz 下 21.33ms（每秒约 47 次），44.1kHz 下 23.22ms（每秒约 43 次）。
 
-**不会累积漂移的原因**：`audio_time = start_time + 累积帧数换算的绝对时间`。`start_time` 只取了**一次**，所以即使某次 `input_and_output` 多花了 5ms，下一次的 `audio_time` 目标值完全不受影响——线程会少睡 5ms 来追赶。
+**不会累积漂移的原因**：`audio_time = start_time + 累积帧数换算的绝对时间`。`start_time` 只取了**一次**，所以即使某次 `input_and_output` 多花了 5ms，下一次的 `audio_time` 目标值完全不受影响——线程会少睡 5ms 来追赶。这是音频时钟设计的精髓：用墙上钟的绝对时间做目标，而非"上次结束 + 固定间隔"的相对时间。
 
 ### 1.3 `input_and_output` 逐行解析
 
@@ -156,24 +157,235 @@ static void input_and_output(struct audio_output *audio,
 }
 ```
 
-`clamp_audio_output` 做的事：
-- 先把 `mix->buffer` **整份复制**到 `mix->buffer_unclamped`（保留原始值）
-- 再对 `mix->buffer` 做钳位：`val > 1.0 → 1.0`、`val < -1.0 → -1.0`、`isNaN → 0`
-- consumer 可以通过 `allow_clipping` 标志选择用 raw 版还是 clamped 版
+参数传递的细节值得注意：`prev_time` 对应 `start_ts_in`（窗口起始），`audio_time` 对应 `end_ts_in`（窗口结束）。两者由音频线程的墙上钟绝对推导，`end_ts_in - start_ts_in` 永远等于 1024 采样点对应时长（48kHz 下 21.33ms）。`new_ts` 是输出参数——可能被缓冲逻辑修正为更早的时间戳，传给下游消费者。
 
-`do_audio_output` 做的事：
-- 遍历该 mix 的所有 consumer（倒序遍历，安全删除）
-- 根据 `allow_clipping` 选择 `buffer_unclamped` 还是 `buffer`
-- 如果 consumer 要求的格式/采样率/声道跟 OBS 内部不一样，调 `audio_resampler_resample`
-- 调用 `input->callback(param, mix_idx, &data)`，即 `receive_audio`（编码器）或 `on_audio_playback`（监控）
+### 1.4 四阶段处理框架概览
+
+`input_and_output` 内部做的事情可以清晰地分成 A/B/C/D 四个阶段，这个框架贯穿整个音频线程：
+
+| 阶段 | 名称 | 核心动作 | 位置 |
+|------|------|---------|------|
+| **A** | 渲染（Render） | 构建渲染树 → 逐源产出 `output_buf` → 累加到 mix buffer → 清理已消费数据 | `audio_callback()` |
+| **B** | 缓冲管理（Buffering） | `calc_min_ts()` 找最早时间戳 → 如有滞后源，回退处理窗口 → 上限到了就丢帧 | `audio_callback()` 内部 |
+| **C** | 钳制（Clamp） | 混音值钳到 [-1.0, 1.0]，NaN→0，同时保留 unclamped 副本 | `clamp_audio_output()` |
+| **D** | 分发（Output） | 混音完成的 mix buffer 广播给所有订阅者（编码器/raw output/插件） | `do_audio_output()` |
+
+阶段 A 涵盖音频树构建、逐源渲染、混音和清理，是 `audio_callback` 的核心——下一节我们将把它拆成六个子阶段逐一分析。阶段 B 也在 `audio_callback` 内部完成。阶段 C 和 D 是 `audio_callback` 返回后由 `input_and_output` 调用的。
+
+这里先快速过一下阶段 C 和 D 的要点（第八节还会展开）：
+
+**阶段 C 的 NaN 处理：**
+
+```c
+float val = *mix_data;
+val = (val == val) ? val : 0.0f;     // NaN → 0（NaN 不等于自己，这个特性很巧妙）
+val = (val > 1.0f)  ? 1.0f : val;
+val = (val < -1.0f) ? -1.0f : val;
+```
+
+**阶段 D 的三类消费者：**
+
+| 消费者类型 | 注册位置 | 回调 | 用途 |
+|-----------|----------|------|------|
+| 音频编码器 | `obs-encoder.c:375` | `receive_audio()` | AAC/Opus 编码 → 推流/录制 |
+| 原始音频输出 | `obs-output.c:2453` | `default_raw_audio_callback()` | FFmpeg muxer、重放缓冲 |
+| 外部插件/用户 | `obs.c:3165`（公共 API） | 自定义 | 第三方拿最终混音数据 |
+
+本质是一个**发布-订阅**模式：前面 A/B/C 阶段把数据准备好，阶段 D 通知所有订阅者来取。
 
 ---
 
-## 二、音频树是怎么构建的
+## 二、audio_callback 深度解析：参数、队列与六阶段
+
+`audio_callback`（`libobs/obs-audio.c:555`）是整个音频子系统的绝对心脏。每 Tick 被调用一次，参数由 `input_and_output` 传入，内部完成构建、渲染、缓冲、混音、清理五个阶段——加上"落后源硬兜底"这个异常路径，共六个阶段。本节先把函数签名和时钟核心 `buffered_timestamps` 讲清楚，再逐一拆解六个阶段。
+
+### 2.1 函数签名与参数来源
+
+```c
+bool audio_callback(void *param,
+                    uint64_t start_ts_in,   // 窗口起始（墙上钟算出的"理想"）
+                    uint64_t end_ts_in,     // 窗口结束
+                    uint64_t *out_ts,       // 输出：修正后的窗口起始
+                    uint32_t mixers,        // 活跃 mix 位掩码
+                    struct audio_output_data *mixes)  // 往这写 = 往 mix buffer 写
+```
+
+参数来自 `input_and_output` [audio-io.c:193]：
+
+```c
+// audio_thread 主循环中
+samples += 1024;
+audio_time = start_time + audio_frames_to_ns(rate, samples);
+// prev_time = 上一帧的 audio_time
+
+input_and_output(audio, audio_time, prev_time);
+    → audio->input_cb(param, prev_time, audio_time, &new_ts, active_mixes, data);
+```
+
+`start_ts_in` 和 `end_ts_in` 由音频线程的墙上钟绝对推导，永不漂移。`end_ts_in - start_ts_in` 永远等于 1024 采样点对应时长（48kHz 下 21.33ms）。
+
+`out_ts` 是输出参数，可能被缓冲逻辑修正为更早的时间戳，传给下游消费者。如果没有缓冲介入，`*out_ts = start_ts_in`。
+
+### 2.2 `buffered_timestamps`：整个回调的时钟核心
+
+这是理解 `audio_callback` 最关键的数据结构。类型是 `deque`（双端队列），存储在 `obs_core_audio.buffered_timestamps` [obs-internal.h:449]。
+
+每 Tick 三步操作：
+
+```
+① deque_push_back(&buffered_timestamps, &ts);   // 当前 ts 存队尾
+② deque_peek_front(&buffered_timestamps, &ts);  // 队首取实际用的 ts  ★ ts 可能被覆盖
+③ deque_pop_front(&buffered_timestamps);        // tick 结束时弹掉队首
+```
+
+**正常时（无缓冲）**：队列只有 1 条记录。push 什么 peek 就是什么。ts 不变。
+
+**缓冲时**：`add_audio_buffering` 或 `set_fixed_audio_buffering` 往**队首** push 了额外的旧时间区间。peek 取出的就是被拉回的老区间，ts 被覆盖。
+
+队列严格升序：`push_back` 写晚的，`push_front` 写早的——队首永远是最老的时间点。这个设计非常简洁：正常时队列自平衡（push 一个 pop 一个），缓冲时只需要往队首塞旧区间，缓冲结束自动恢复。
+
+下面六个阶段全部围绕这个队列展开。先记住这个三步走，后面每个阶段都会涉及。
+
+### 2.3 阶段一：构建渲染树（Build）
+
+每帧的第一件事，是找出"本帧有哪些源需要处理音频"，产出两个列表：
+
+```c
+da_resize(render_order, 0);
+da_resize(root_nodes, 0);
+
+// 路径 A：从画面反推
+for (每个 video mix)
+    for (每个 view->channels[i])
+        source = view->channels[i];
+
+        if (mix->mix_audio)
+            root_nodes ← source;           // 顶层源标记为混音根
+
+        obs_source_enum_active_tree(source, push_audio_tree2);
+        // 深搜子树 → 去重检测 → 重复源升级为 root_nodes
+
+        push_audio_tree(NULL, source);     // 加入 render_order
+
+// 路径 B：兜底纯音频源
+for (first_audio_source 链表)
+    push_audio_tree(NULL, source);         // 已在 render_order 里的跳过
+```
+
+**路径 A** 遍历所有 video mix 的 view channel——"画面上有哪些源在活动？它们的音频也拉进来"。这里容易混淆的是 view channel 和音频声道的区别：view channel 是源槽位（一个 view 有 64 个输入口），音频声道是物理声道数（立体声=2）。两者完全正交。
+
+真正让音频"分流到不同输出"的，不是 view channel，而是每个 source 上的 `audio_mixers` 位掩码——控制这个 source 的音频数据拷贝到第几个 audio mix。
+
+**路径 B** 是兜底：有些纯音频源没有被挂在任何 Scene 里（比如"音频输出采集"），但它们注册到了 `first_audio_source` 全局链表中，需要在这里捞起来。已经在 render_order 里的会跳过。
+
+结果：
+
+```
+render_order[] = 所有需要本帧渲染音频的源（叶子在前，父源在后）
+root_nodes[]   = 需要参与最终混音的顶层源（scene + 被去重升级的重复源）
+```
+
+去重逻辑在第三节详述。
+
+### 2.4 阶段二：逐源渲染（Render）
+
+```c
+for (render_order 中每个 source) {
+    obs_source_audio_render(source, ...);  // 产出 1024 采样点到输出缓冲
+
+    if (should_silence_monitored(source))  // 监控去重消音
+        clear_audio_output_buf(source);
+}
+```
+
+每个 source 走三条渲染路径之一（第四节详述）：
+
+| 源类型 | 函数 | 数据来源 |
+|--------|------|----------|
+| 有 `audio_render` 回调（scene/媒体）| `custom_audio_render()` | 回调当场生成或累加子源 |
+| 有 `audio_mix` 回调（submix） | `audio_submix()` | 累加子源 output_buf |
+| 普通采集源（麦克风等） | `process_audio_source_tick()` | peek `audio_input_buf` deque |
+
+叶子源先于父源渲染——因为 Scene/Group 需要子源的 output_buf 已经就绪才能累加。
+
+### 2.5 阶段三：缓冲管理判断（Buffer）
+
+```c
+calc_min_ts(..., &min_ts);   // 找最慢源的 audio_ts
+
+if (fixed_buffer)
+    set_fixed_audio_buffering();          // 预先垫满
+else if (min_ts < ts.start)
+    add_audio_buffering();                // 按需追加：往队首塞旧区间
+```
+
+`calc_min_ts` 遍历所有源（跳过 pending 源），找最小的 `audio_ts`。如果最慢的源的 `audio_ts` 比当前处理窗口的 `ts.start` 还小，说明有源数据没跟上——触发缓冲。
+
+固定缓冲和动态缓冲的区别只在于**缓冲量**：固定一次性垫满 `max_buffering_ticks`，动态按落后量仅垫需要的 tick 数。底层 push_front 逻辑完全一致。缓冲的具体计算逻辑在第六节展开。
+
+### 2.6 阶段四：落后源硬兜底
+
+当缓冲量已经达到上限（`audio_buffering_maxed`），但仍有源落后时，进入硬兜底：
+
+```c
+if (audio_buffering_maxed(audio) && source->audio_ts != 0 && source->audio_ts < ts.start) {
+    if (source->info.audio_render) {
+        source->audio_pending = true;     // 渲染型源：只能等
+    } else {
+        ignore_audio(source, ...);        // 采集源：pop deque 丢数据，追平
+        if (rerender)
+            obs_source_audio_render(src, ...);  // 追上了重新渲染
+    }
+}
+```
+
+关键区别：
+
+- **有 `audio_render` 回调的源**（scene、媒体文件）：数据当场生成，没有 deque 可以 pop。只能标记 pending，等待源自己追赶。媒体源的音频帧和视频帧是配对好的，丢音频帧会破坏 A/V 同步。
+- **无 `audio_render` 的采集源**（麦克风等）：有 deque。`ignore_audio` 计算落后量 → pop 掉落后采样 → 时间戳前移。追上了返回 true 触发 re-render。
+
+### 2.7 阶段五：混音（Mix）
+
+```c
+if (!audio->buffering_wait_ticks) {          // ★ 只有缓冲等待结束时才混
+    for (root_nodes 中每个 source) {
+        if (source->audio_pending) continue;  // 数据不够，跳过
+
+        mix_audio(mixes, source, ...);
+        // mixes[mix].data[ch][i] += source->output_buf[mix][ch][i]
+    }
+}
+```
+
+纯浮点累加。`mix_audio` 内部按时间戳偏移 `start_point` 对齐，不会把过期数据混入。
+
+**关键门控**：`buffering_wait_ticks` 不为零时整个混音阶段跳过——此时缓冲正在"消耗"旧的时间区间，让落后源有时间追赶。数据的生产和消费仍在进行，只是不输出。
+
+### 2.8 阶段六：清理（Cleanup）
+
+```c
+discard_audio(audio, source, ...);    // 逐源 pop 已消费的 deque 数据
+release_audio_sources(audio);         // 释放 render_order refs
+deque_pop_front(&buffered_timestamps); // 弹掉队首 ← 与 2.2 节的第③步呼应
+```
+
+`discard_audio` 的关键行为（按 `audio_ts` 与 `ts` 区间的关系分三种情况）：
+
+```
+正常路径：audio_ts >= ts.end    → pop 已消费帧，推进 audio_ts = ts.end
+落后路径：audio_ts < ts.start   → return（不弹！不推进！）
+渲染型源：audio_ts = 0          → return（不管，它们没有 deque）
+```
+
+落后的源音频线程不碰它，时间戳原地不动。下次 `calc_min_ts` 里它是检测缓冲触发的关键信号。这个"不弹落后源"的设计非常关键——它让 `audio_ts` 成为一个天然的"进度指针"，缓冲管理完全靠读这个指针来判断谁落后了。
+
+---
+
+## 三、音频树构建详解
 
 这是整个音频系统里最容易搞混的地方。`audio_callback` 每 Tick 都要重建两个列表：`render_order` 和 `root_nodes`。
 
-### 2.1 推入函数
+### 3.1 推入函数
 
 **`push_audio_tree(parent, source, audio)`**（obs-audio.c:30-43）：
 
@@ -224,9 +436,19 @@ static void push_audio_tree2(obs_source_t *parent, obs_source_t *source, void *p
 
 `push_audio_tree2` 多了重复检测：如果同一个 source 在多条音频路径里出现了（比如同一麦克风源被放在两个 Scene 的不同 Group 里），只把它作为一个独立的 root_node 混入 mix，而不是在每个子路径上都混一次。这就是 `audio_is_duplicated` 标记的作用。
 
-### 2.2 构建过程
+**"独立音频源"的判断标准**（只有满足全部三个条件才升级为 root_node）：
 
-在 `audio_callback` 里：
+```c
+type == OBS_SOURCE_TYPE_INPUT
+&& (output_flags & OBS_SOURCE_AUDIO)
+&& !(output_flags & OBS_SOURCE_COMPOSITE)
+```
+
+即：是输入源、有音频能力、不是复合源（非 scene/group/transition）。复合源（如 Scene）自己出现在多个地方时不会升级——它们的子源已经由各自的 `push_audio_tree2` 处理过了。
+
+### 3.2 构建过程
+
+在 `audio_callback` 里（对应 2.3 节的阶段一）：
 
 ```c
 da_resize(audio->render_order, 0);    // 元素数归零，保留内存
@@ -240,7 +462,7 @@ for (size_t j = 0; j < obs->video.mixes.num; j++) {
 
     pthread_mutex_lock(&view->channels_mutex);
 
-    // 遍历这个 view 的每个 channel（最多 32 个）
+    // 遍历这个 view 的每个 channel（最多 64 个）
     for (uint32_t i = 0; i < MAX_CHANNELS; i++) {
         obs_source_t *source = view->channels[i];
         if (!source || !obs_source_active(source) || obs_source_removed(source))
@@ -271,7 +493,7 @@ while (source) {
 pthread_mutex_unlock(&data->audio_sources_mutex);
 ```
 
-### 2.3 举例说明
+### 3.3 实例推演
 
 假设有这样的场景结构：
 
@@ -336,9 +558,234 @@ root_nodes[3]: 麦克风    → 重复源，audio_submix 自己处理
 
 ---
 
-## 三、从采集到入队：`obs_source_output_audio` 全流程
+## 四、单源渲染三路径：`obs_source_audio_render`
 
-所有平台采集线程最终都调这个函数把数据推入 OBS 音频管线。
+`obs-source.c:5455`。这是阶段二（2.4 节）中每个源被调用的入口，根据源类型分发到三条路径。
+
+### 4.1 入口分发逻辑
+
+```c
+void obs_source_audio_render(source, mixers, channels, sample_rate, size)
+{
+    // 第零步：output_buf 都没分配？
+    if (!source->audio_output_buf[0][0]) {
+        source->audio_pending = true;      // 标记无效
+        return;
+    }
+
+    // 门 1：自定义渲染（scene、媒体文件等）
+    if (source->info.audio_render) {
+        custom_audio_render(source, ...);  // 全权委托，OBS 不插手
+        return;
+    }
+
+    // 门 2：子混音（submix 型 composite source，当前无人使用）
+    if (source->info.audio_mix) {
+        audio_submix(source, ...);
+    }
+
+    // 门 3：标准流程（普通采集源：麦克风等）
+    if (!source->audio_ts) {
+        source->audio_pending = true;
+        return;
+    }
+    process_audio_source_tick(source, ...);
+}
+```
+
+三条路径的真相：
+
+| | `audio_render` | `audio_mix` | 无回调（叶子源） |
+|---|---|---|---|
+| 注册者 | Scene, Transition, Slideshow | **零个**（预留） | 麦克风, 桌面音频, 游戏采集 |
+| 路径 | 门 1 → return | 门 2 → 往下掉进门 3 | 直接门 3 |
+| 做什么 | 全权掌控：遍历子源+对时+自定义混音 | 预留：只累加子源 | peek deque + copy + 上音量 |
+
+**容器源 vs 叶子源：**
+
+- **容器源**：有子 source。Scene 有 scene item → child source，Transition 有 A/B 两个子源。必须实现 `audio_render`，因为 OBS 不知道你怎么排列组合子 source。
+- **叶子源**：无子 source。数据从外部来（驱动回调、解码器），通过 `obs_source_output_audio()` 写入 `audio_input_buf`。不需要任何回调，OBS 默认流程全自动。
+
+### 4.2 门一：`custom_audio_render` — 渲染型源
+
+`obs-source.c:5338-5373`
+
+```c
+static void custom_audio_render(obs_source_t *source,
+                                 uint32_t mixers,        // 活跃 mix 位掩码
+                                 size_t channels,        // 声道数
+                                 size_t sample_rate)     // 采样率
+{
+    struct obs_source_audio_mix audio_data;  // 打包 buffer 指针传给回调
+    bool success;
+    uint64_t ts;                             // 回调返回的时间戳
+
+    // ── ① 绑指针 + 清活跃 mix ──
+    for (size_t mix = 0; mix < 6; mix++) {
+        // 各声道 output_buf 的地址填进 audio_data
+        for (size_t ch = 0; ch < channels; ch++)
+            audio_data.output[mix].data[ch] = source->audio_output_buf[mix][ch];
+
+        // 这个 mix 既被源勾选、又被全局设为活跃 → 先清零
+        // 原因：scene 类回调用累加模式（+=），必须从 0 开始
+        if ((source->audio_mixers & mixers & (1 << mix)) != 0) {
+            memset(source->audio_output_buf[mix][0], 0,
+                   sizeof(float) * 1024 * channels);
+        }
+    }
+
+    // ── ② ★ 调源自己的回调 ──
+    // 回调在 audio_data.output[mix].data[ch] 上直接写采样值
+    success = source->info.audio_render(source->context.data,
+                                         &ts, &audio_data,
+                                         mixers, channels, sample_rate);
+
+    // ── ③ 更新状态 ──
+    source->audio_ts      = success ? ts : 0;
+    source->audio_pending = !success;
+    if (!success || !source->audio_ts || !mixers)
+        return;
+
+    // ── ④ 清理未使用 mix ──
+    // 全局活跃但源没勾选的 mix → 可能有旧残留 → 清零
+    for (size_t mix = 0; mix < 6; mix++) {
+        uint32_t bit = 1 << mix;
+        if ((mixers & bit) == 0) continue;
+        if ((source->audio_mixers & bit) == 0)
+            memset(source->audio_output_buf[mix][0], 0,
+                   sizeof(float) * 1024 * channels);
+    }
+
+    // ── ⑤ 应用音量 ──
+    apply_audio_volume(source, mixers, channels, sample_rate);
+}
+```
+
+注意两处清零的区别：
+- 第①步清的：源勾选的活跃 mix（为回调累加做准备）
+- 第④步清的：源没勾选但全局活跃的 mix（清残留防杂音）
+
+关键：数据不是从 deque 取出来的——是**当场生成**的。源的 `audio_ts` 完全由源自己决定（解码器播放到哪了）。这就是为什么后面处理落后时，渲染型源不能 `ignore_audio`（没法 pop deque），只能标记 pending。
+
+### 4.3 门二：`audio_submix` — 复合源累加
+
+`obs-source.c:5375-5403`
+
+```c
+static void audio_submix(obs_source_t *source,
+                          size_t channels, size_t sample_rate)
+{
+    struct audio_output_data audio_data;
+    struct obs_source_audio audio = {0};
+    bool success;
+    uint64_t ts;
+
+    // ── ① 绑指针：把 mix_buf 地址填进 audio_data ──
+    for (size_t ch = 0; ch < channels; ch++)
+        audio_data.data[ch] = source->audio_mix_buf[ch];
+
+    // ── ② 清零（回调用累加模式）──
+    memset(source->audio_mix_buf[0], 0,
+           sizeof(float) * 1024 * channels);
+
+    // ── ③ 调 audio_mix 回调，遍历子源累加 ──
+    success = source->info.audio_mix(source->context.data,
+                                      &ts, &audio_data,
+                                      channels, sample_rate);
+    if (!success) return;
+
+    // ── ④ 包装成 obs_source_audio ──
+    for (size_t i = 0; i < channels; i++)
+        audio.data[i] = (const uint8_t *)audio_data.data[i];
+    audio.samples_per_sec = (uint32_t)sample_rate;
+    audio.frames = 1024;
+    audio.format = AUDIO_FORMAT_FLOAT_PLANAR;
+    audio.speakers = (enum speaker_layout)channels;
+    audio.timestamp = ts;
+
+    // ── ⑤ ★ 推回自己的管线 ──
+    // → filter_async_audio → source_output_audio_data → push deque
+    obs_source_output_audio(source, &audio);
+
+    // 不 return，回到 obs_source_audio_render 往下掉进门 3
+}
+```
+
+这一步的设计很精妙：复合源把子源的 output 累加后，当作"自己的原始音频"，再走一遍 `obs_source_output_audio` → `process_audio` → `filter_async_audio` → push deque。然后门三的 `process_audio_source_tick` 再从 deque 取出来。这意味着复合源挂的 filter（如总线压缩）会作用于子源的混音结果。
+
+### 4.4 门三：`process_audio_source_tick` — 标准采集源
+
+`obs-source.c:5405-5453`
+
+```c
+static inline void process_audio_source_tick(
+    obs_source_t *source,
+    uint32_t mixers, size_t channels,
+    size_t sample_rate, size_t size)       // size = 4096 = 1024 × sizeof(float)
+{
+    bool is_submix = source->info.output_flags & OBS_SOURCE_SUBMIX;
+
+    // ── ① 检查 deque 够不够 1024 帧 ──
+    pthread_mutex_lock(&source->audio_buf_mutex);
+    if (source->audio_input_buf[0].size < size) {
+        source->audio_pending = true;
+        pthread_mutex_unlock(&source->audio_buf_mutex);
+        return;
+    }
+
+    // ── ② peek（非 pop）从 deque 取数据到 output_buf[0] ──
+    for (size_t ch = 0; ch < channels; ch++)
+        deque_peek_front(&source->audio_input_buf[ch],
+                         source->audio_output_buf[0][ch], size);
+    pthread_mutex_unlock(&source->audio_buf_mutex);
+
+    // ── ③ 从 mix 0 复制到其他活跃 mix ──
+    for (size_t mix = 1; mix < 6; mix++) {
+        uint32_t bit = 1 << mix;
+
+        // submix 源（audio_line）特殊处理：只走一轮 mix=1
+        if (is_submix) {
+            if (mix > 1) break;
+            mixers = 1;      // 强制只认 mix 0
+            bit = 1;         // 权限位也改成 mix 0 的
+        }
+
+        // 不活跃或源没勾选 → 清零
+        if ((source->audio_mixers & bit) == 0 || (mixers & bit) == 0) {
+            memset(source->audio_output_buf[mix][0], 0, size * channels);
+            continue;
+        }
+
+        // 逐声道 memcpy 4096 字节
+        for (size_t ch = 0; ch < channels; ch++)
+            memcpy(source->audio_output_buf[mix][ch],
+                   source->audio_output_buf[0][ch], size);
+    }
+
+    // ── ④ submix 源直接返回（volume 在 filter 链中已处理）──
+    if (is_submix) {
+        source->audio_pending = false;
+        return;
+    }
+
+    // ── ⑤ 清理 mix 0（如果未使用）+ 上音量 ──
+    if ((source->audio_mixers & 1) == 0 || (mixers & 1) == 0)
+        memset(source->audio_output_buf[0][0], 0, size * channels);
+
+    apply_audio_volume(source, mixers, channels, sample_rate);
+    source->audio_pending = false;
+}
+```
+
+`OBS_SOURCE_SUBMIX` 唯一注册者是内部源 `audio_line`（"Audio line, internal use only"），用于监听系统内部路由。它只输出到 mix 0。
+
+这里 `size = 4096`（1024×4）是**单声道的字节数**。因为 OBS 用 planar 格式，每个声道的 buffer 都是独立的，所以检查只需要检查 `audio_input_buf[0].size >= 4096`——左声道有 1024 个 float 了，就认为其他声道也够了。
+
+---
+
+## 五、数据入队：`obs_source_output_audio` 全流程
+
+所有平台采集线程最终都调这个函数把数据推入 OBS 音频管线。与第四节（消费端）形成完整的生产者-消费者闭环。
 
 ```c
 void obs_source_output_audio(obs_source_t *source, const struct obs_source_audio *audio_in)
@@ -373,7 +820,7 @@ void obs_source_output_audio(obs_source_t *source, const struct obs_source_audio
 }
 ```
 
-### 3.1 `process_audio` —— 格式统一
+### 5.1 `process_audio` —— 格式统一
 
 ```c
 static void process_audio(obs_source_t *source, const struct obs_source_audio *audio)
@@ -398,7 +845,7 @@ static void process_audio(obs_source_t *source, const struct obs_source_audio *a
 }
 ```
 
-### 3.2 `filter_async_audio` —— filter 链
+### 5.2 `filter_async_audio` —— Filter 责任链
 
 ```c
 static struct obs_audio_data *filter_async_audio(obs_source_t *source,
@@ -422,9 +869,9 @@ static struct obs_audio_data *filter_async_audio(obs_source_t *source,
 }
 ```
 
-这是一个典型的责任链模式。常见音频 filter：噪声明明抑制（RNNoise/Speex）、压限器、增益、均衡器（EQ）、VST 插件。
+这是一个典型的责任链模式。常见音频 filter：噪声抑制（RNNoise/Speex）、压限器、增益、均衡器（EQ）、VST 插件。
 
-### 3.3 `source_output_audio_data` —— 入 deque
+### 5.3 `source_output_audio_data` —— 入 deque
 
 把处理完的数据推到 source 的 `audio_input_buf[ch]`（每声道一个 deque），同时更新 `source->audio_ts`：
 
@@ -437,163 +884,25 @@ source->audio_ts = data->timestamp + audio_frames_to_ns(rate, data->frames);
 // 源的时间戳推进到 "这批数据的结束时间"
 ```
 
----
+这里有三个写入 `audio_ts` 的位置（全貌）：
 
-## 四、从 deque 取出渲染：`obs_source_audio_render` 全流程
+| 写位置 | 值 | 说明 |
+|--------|-----|------|
+| `reset_audio_data()` | `os_time` | 源刚启动时的初始时间戳 |
+| `custom_audio_render()` | 源自己返回的 ts | 渲染型源自主管理时间（解码器位置） |
+| `source_output_audio_data()` | timestamp + frames 时长 | 采集源推入数据时推进（本节路径） |
 
-audio-io 线程在 `audio_callback` 的 Step 3 中调这个函数。
-
-```c
-void obs_source_audio_render(obs_source_t *source, uint32_t mixers,
-                              size_t channels, size_t sample_rate, size_t size)
-{
-    if (!source->audio_output_buf[0][0]) {
-        source->audio_pending = true;
-        return;
-    }
-
-    // 路径 1：自定义渲染（罕见）
-    if (source->info.audio_render) {
-        custom_audio_render(source, mixers, channels, sample_rate);
-        return;
-    }
-
-    // 路径 2：复合源（Scene/Group），先累加子源
-    if (source->info.audio_mix) {
-        audio_submix(source, channels, sample_rate);
-    }
-
-    // 路径 3：标准处理（所有源都要走）
-    if (!source->audio_ts) {
-        source->audio_pending = true;
-        return;
-    }
-
-    process_audio_source_tick(source, mixers, channels, sample_rate, size);
-}
-```
-
-### 4.1 路径 1：`custom_audio_render` —— 渲染型音源（媒体文件等）
-
-```c
-static void custom_audio_render(obs_source_t *source, uint32_t mixers,
-                                 size_t channels, size_t sample_rate)
-{
-    struct obs_source_audio_mix audio_data;
-
-    // 把 output_buf 地址传给源
-    for (mix...) for (ch...)
-        audio_data.output[mix].data[ch] = source->audio_output_buf[mix][ch];
-
-    // 清零活跃 mix
-    if (active_mixes)
-        memset(output_buf[mix][0], 0, 1024 * sizeof(float) * channels);
-
-    // 调用源的 audio_render → 当场生成 1024 帧，回填 ts
-    success = source->info.audio_render(source->context.data,
-                                         &ts, &audio_data, mixers,
-                                         channels, sample_rate);
-    source->audio_ts = success ? ts : 0;
-    source->audio_pending = !success;
-
-    // 清零未使用的 mix
-    for (mix...) if ((mixers & bit) == 0 || (audio_mixers & bit) == 0)
-        memset(output_buf[mix][0], 0, ...);
-
-    apply_audio_volume(source, mixers, channels, sample_rate);
-}
-```
-
-关键：数据不是从 deque 取出来的——是**当场生成**的。源的 `audio_ts` 完全由源自己决定（解码器播放到哪了）。这就是为什么后面处理落后时，渲染型源不能 `ignore_audio`（没法 pop deque），只能标记 pending。
-
-### 4.2 路径 2：`audio_submix` —— 复合源累加子源
-
-```c
-static void audio_submix(obs_source_t *source, size_t channels, size_t sample_rate)
-{
-    struct audio_output_data audio_data;
-    struct obs_source_audio audio = {0};
-
-    // 把 mix_buf 的地址暴露给 audio_mix 回调
-    for (ch...) audio_data.data[ch] = source->audio_mix_buf[ch];
-
-    // 清零
-    memset(mix_buf[0], 0, 1024 * sizeof(float) * channels);
-
-    // 调用源的 audio_mix 回调
-    // Scene: 遍历所有子源，累加它们的 audio_output_buf
-    // Group: 同 Scene
-    // Transition: 按过渡进度混合两个子源
-    success = source->info.audio_mix(source->context.data,
-                                      &ts, &audio_data, channels, sample_rate);
-
-    // 把累加结果组装成 obs_source_audio
-    for (ch...) audio.data[ch] = (const uint8_t *)audio_data.data[ch];
-    audio.samples_per_sec = sample_rate;
-    audio.frames = 1024;
-    audio.format = AUDIO_FORMAT_FLOAT_PLANAR;
-    audio.timestamp = ts;
-
-    // 🔴 关键：再次调用 obs_source_output_audio！
-    // 这会过这个复合源自己的 filter 链，然后 push 到它自己的 deque
-    obs_source_output_audio(source, &audio);
-}
-```
-
-这一步的设计很精妙：复合源把子源的 output 累加后，当作"自己的原始音频"，再走一遍 `obs_source_output_audio` → `process_audio` → `filter_async_audio` → push deque。然后路径 3 的 `process_audio_source_tick` 再从 deque 取出来。这意味着复合源挂的 filter（如总线压缩）会作用于子源的混音结果。
-
-### 4.3 路径 3：`process_audio_source_tick` —— 从 deque 取数据输出
-
-```c
-static void process_audio_source_tick(obs_source_t *source, uint32_t mixers,
-                                       size_t channels, size_t sample_rate,
-                                       size_t size)  // size = 4096
-{
-    pthread_mutex_lock(&source->audio_buf_mutex);
-
-    // 检查第一声道有没有攒够 1024 帧
-    if (source->audio_input_buf[0].size < size) {
-        source->audio_pending = true;
-        pthread_mutex_unlock(&source->audio_buf_mutex);
-        return;   // 数据不够 → 标记 pending → 跳过
-    }
-
-    // peek（只读不弹）：从 deque 取 4096 字节 = 1024 个 float
-    for (size_t ch = 0; ch < channels; ch++)
-        deque_peek_front(&source->audio_input_buf[ch],
-                         source->audio_output_buf[0][ch], size);
-    //                          ↑ 先统一输出到 mix[0]
-    pthread_mutex_unlock(&source->audio_buf_mutex);
-
-    // 复制到其他 mix，或清零不用的
-    for (size_t mix = 1; mix < MAX_AUDIO_MIXES; mix++) {
-        if ((source->audio_mixers & bit) == 0 || (mixers & bit) == 0) {
-            // 源不输出到这个 mix，或这个 mix 不活跃 → 清零
-            memset(source->audio_output_buf[mix][0], 0, size * channels);
-            // size * channels = 4096 × 2 = 8192（清掉所有声道）
-        } else {
-            for (ch...) memcpy(output_buf[mix][ch], output_buf[0][ch], size);
-            // 逐声道拷贝 4096 字节
-        }
-    }
-
-    // mix[0] 自身如果未使用也清零
-    if ((audio_mixers & 1) == 0 || (mixers & 1) == 0)
-        memset(output_buf[0][0], 0, size * channels);
-
-    // 应用音量
-    apply_audio_volume(source, mixers, channels, sample_rate);
-    source->audio_pending = false;
-}
-```
-
-这里 `size = 4096`（1024×4）是**单声道的字节数**。因为 OBS 用 planar 格式，每个声道的 buffer 都是独立的，所以检查只需要检查 `audio_input_buf[0].size >= 4096`——左声道有 1024 个 float 了，就认为其他声道也够了。
+`discard_audio` 也会推进 `audio_ts`（消费端），但那个是在音频线程侧，后面 6.8 节详述。
 
 ---
 
-## 五、缓冲管理：时间戳怎么玩
+## 六、缓冲管理深度解析
 
-### 5.1 核心概念
+缓冲管理是 OBS 音频子系统中最精妙的部分。它的本质是**用延迟换稳定性**——发现某个源数据还没到，就把混音窗口往回拉，给慢源一点时间追赶。本节从核心概念出发，逐步深入到动态缓冲、固定缓冲、硬兜底三层机制。
+
+### 6.1 核心概念
+
+三个核心量的关系：
 
 ```
 source->audio_ts  =  源"已经生产到哪个时间点"（现实墙上时间的纳秒）
@@ -601,11 +910,60 @@ ts.start          =  混音窗口"需要从哪个时间点开始的数据"
 ts.end            =  混音窗口"需要到哪个时间点"
 ```
 
-正常情况：`source->audio_ts >= ts.start`，源的数据覆盖了 ts 区间，直接渲染。
+正常情况：`source->audio_ts >= ts.end`，源的数据覆盖了 ts 区间，直接渲染。
 
-落后情况：`source->audio_ts < ts.start`，源的数据产得不够快。
+落后情况：`source->audio_ts < ts.start`，源的数据产得不够快，够不着处理窗口的起点。
 
-### 5.2 动态缓冲：`add_audio_buffering`
+```
+USB 麦克风:  ████████  ← audio_ts = T₁ = 100ns
+桌面音频:          ████████  ← audio_ts = T₂ = 105ns（比麦克风晚了 5ms）
+
+当前处理窗口: [100, 121)
+               ↑ 麦克风有数据 ✓    桌面音频还没到 ✗
+```
+
+`audio_ts` 有三个写入源（见 5.3 节），而它的读出场景就是这里——`calc_min_ts` 遍历所有源的 `audio_ts`，找最小值来判断谁落后了。
+
+### 6.2 `buffering_wait_ticks`：缓冲倒计时
+
+```
+改：缓冲触发时 ++（add_audio_buffering 每次 push_front 一个区间时 ++）
+改：每 tick 结尾 --（audio_callback 最后几行）
+用：mix_audio 前检查 != 0 → 跳过混音
+用：返回值 → wait_ticks > 0 时 return false（不输出）
+```
+
+缓冲推了几个旧时间区间，就 silent 跑几帧——消耗旧区间、帮慢源清 deque、对齐时间戳。期间混音全部跳过，数据"凭空"被消耗不输出。
+
+### 6.3 为什么要渲染但不要混音
+
+缓冲期间 `audio_callback` 照常执行渲染（阶段二），照常执行清理（阶段六），但跳过混音（阶段五，因为 `buffering_wait_ticks != 0`）。直接跳过渲染不是更高效？
+
+不行。跳过渲染会导致 deque 停滞——慢源内部的 `audio_ts` 全靠 `discard_audio` 推进，而 `discard_audio` 依赖 `ts` 区间来判断是否对齐。渲染过程中还涉及音频动作（fade in/fade out/音量渐变）的推进，跳过会导致状态混乱。
+
+另外缓冲通常只有 2~3 tick，开销极小。加跳过路径的分支成本可能比直接跑还高。
+
+### 6.4 传入时间 vs 实际使用时间
+
+这是理解缓冲机制最关键的一张图：
+
+```
+外部时间持续流逝：
+Tick N:   start_ts_in = t
+Tick N+1: start_ts_in = t+1024
+Tick N+2: start_ts_in = t+2048
+
+但 audio_callback 内部：
+        传入的值        buffer 覆盖后的实际 ts
+Tick N:   t                  t
+Tick N+1: t+1024             t-1024   ← 缓冲拉回
+Tick N+2: t+2048             t        ← 被覆盖
+Tick N+3: t+3072             t+1024   ← 追上！
+```
+
+传入值 push_back 存在队尾排队等。缓冲结束时它自然排到队首。这就是 2.2 节 `buffered_timestamps` 三步走的威力——外部时间马不停蹄往前走，内部处理窗口被队列"拖住"，等慢源追上来。
+
+### 6.5 动态缓冲：`add_audio_buffering`
 
 ```c
 static void add_audio_buffering(struct obs_core_audio *audio, size_t sample_rate,
@@ -668,14 +1026,29 @@ ts 也被替换成 [0.079, 0.100)
   source->audio_ts = 0.090 → 0.090 >= 0.079 → 数据够了！正常渲染
 ```
 
-`buffered_timestamps` 是一个双端队列：
+`buffered_timestamps` 双端队列的精髓：
+
 - 正常时每次 Tick 往**队尾** push 当前 ts，peek **队首**取出的就是当前 ts
 - 需要缓冲时往**队首** push 更早的 ts，peek 出来就变成了过去的 ts
 - 等 `buffering_wait_ticks` 耗尽后，队列恢复为"push 一个 pop 一个"的正常模式
 
-### 5.3 缓冲满了怎么办：`ignore_audio`
+### 6.6 固定缓冲：`set_fixed_audio_buffering`
 
-条件触发：
+```c
+if (audio->fixed_buffer) {
+    set_fixed_audio_buffering(...);        // 一次垫满 max_buffering_ticks
+} else if (min_ts < ts.start) {
+    add_audio_buffering(...);              // 只垫落后源需要的量
+}
+```
+
+固定缓冲不检查 `min_ts < ts.start`——无脑垫满预设值。信任设备时钟的用户不用选动态缓冲，预先垫好固定的缓冲量，启动后延迟恒定可预测。
+
+两者的底层实现完全一致——都是往 `buffered_timestamps` 队首 push 旧时间区间，区别仅在于触发条件和垫多少。
+
+### 6.7 缓冲满后：`ignore_audio` 硬兜底
+
+当 `total_buffering_ticks == max_buffering_ticks`（默认 45 帧 ≈ 960ms @ 48kHz），缓冲已经到上限了，但仍有源落后时，触发硬兜底：
 
 ```c
 if (audio_buffering_maxed(audio)       // total_buffering_ticks == max
@@ -683,7 +1056,7 @@ if (audio_buffering_maxed(audio)       // total_buffering_ticks == max
     && source->audio_ts < ts.start) {  // 确实落后了
 ```
 
-对于**采集源**：
+对于**采集源**（有 deque）：
 
 ```c
 static bool ignore_audio(obs_source_t *source, size_t channels,
@@ -718,17 +1091,16 @@ static bool ignore_audio(obs_source_t *source, size_t channels,
 source->audio_pending = true;
 ```
 
-为什么不能丢？两个原因：
-1. A/V 同步：媒体的音频帧和视频帧是配对好的，丢了音频声音和画面对不上
-2. 内部状态：媒体源的数据是调用 `audio_render` 回调当场生成的，外部没法用 `deque_pop_front` 方式干预
+为什么不能丢渲染型源的数据？两个原因：
 
-渲染型源"追上来"的方式是：每次 Tick 都调 `audio_render`，即使数据被标记 pending 丢弃了，源内部的解码位置还是往前推进了。如果解码速度 ≥ 实时，终归能追上（audio_ts 会逐渐靠近 ts.start）。
+1. **A/V 同步**：媒体的音频帧和视频帧是配对好的，丢了音频声音和画面对不上
+2. **内部状态**：媒体源的数据是调用 `audio_render` 回调当场生成的，外部没法用 `deque_pop_front` 方式干预
 
-但如果解码就是跟不上（CPU 太忙），就会一直 pending，用户听到的就是音频卡顿/断断续续。直到 CPU 负载降低或用户重启源。
+渲染型源"追上来"的方式是：每次 Tick 都调 `audio_render`，即使数据被标记 pending 丢弃了，源内部的解码位置还是往前推进了。如果解码速度 ≥ 实时，终归能追上（audio_ts 会逐渐靠近 ts.start）。但如果解码就是跟不上（CPU 太忙），就会一直 pending，用户听到的就是音频卡顿/断断续续。
 
-### 5.4 `discard_audio` —— 消费已用数据
+### 6.8 `discard_audio` —— 消费已用数据
 
-缓冲管理和丢弃落后数据之后，`audio_callback` 的 Step 8 遍历所有源，把 input buffer 里已经被混音覆盖的部分弹掉：
+`audio_callback` 阶段六（2.8 节）对每个源调用，把 input buffer 里已经被混音覆盖的部分弹掉：
 
 ```c
 static void discard_audio(struct obs_core_audio *audio, obs_source_t *source,
@@ -740,7 +1112,7 @@ static void discard_audio(struct obs_core_audio *audio, obs_source_t *source,
         return;
     }
 
-    // ts 区间后的数据才保留，前面的全弹出
+    // ts 区间前的数据才保留，前面的全弹出
     if (source->audio_ts < ts->start) {
         // 源落后了，但缓冲还有，先不弹
         return;
@@ -759,11 +1131,192 @@ static void discard_audio(struct obs_core_audio *audio, obs_source_t *source,
 }
 ```
 
+三种情况的决策树：
+
+```
+正常路径：audio_ts >= ts.end    → pop 已消费帧，推进 audio_ts = ts.end
+落后路径：audio_ts < ts.start   → return（不弹！让 audio_ts 停滞作为"落后信号"）
+渲染型源：有 audio_render 回调  → audio_ts = 0，return（不管）
+```
+
+落后的源音频线程不碰它，时间戳原地不动。下次 `calc_min_ts` 里它仍是检测缓冲触发的关键信号——这是一个自愈的闭环。
+
 ---
 
-## 六、监控去重消音
+## 七、完整追踪示例：一个落后源的两帧缓冲之旅
 
-当用户既启用了音频监控（在耳机里听自己的声音），又添加了"音频输出采集"源（采集桌面声音），且两者指向同一设备时，会产生回声。
+本节用一个虚构但精确的例子，把前面所有环节串起来。假设有快源和慢源两个源，48kHz，慢源落后了几毫秒。
+
+```
+初始状态：
+  快源 deque: [t, t+1024), audio_ts = t+1024
+  慢源 deque: [t-m, t-m+333], audio_ts = t-m+333
+  buffering_wait_ticks = 0
+```
+
+### Tick N
+
+```
+ts = [t, t+1024)
+
+Step 1 — 构建渲染树：快源、慢源都入 render_order
+
+Step 2 — 渲染：
+  慢源 deque size < 1024 → audio_pending = true
+  快源 deque size >= 1024 → peek 1024 frames → audio_pending = false
+
+Step 3 — 缓冲判断：
+  calc_min_ts：慢源 pending → 跳过（不参与 min_ts 计算）
+              min_ts = t（来自快源）
+              min_ts < ts.start(t)？否 → 不触发缓冲
+
+Step 4 — 硬兜底：未触发（缓冲未 maxed）
+
+Step 5 — 混音：
+  慢源 pending → 跳过
+  快源 ✓ → mix_audio 累加
+
+Step 6 — discard：
+  慢源 audio_ts = t-m+333 < ts.start(t) → return（不弹！audio_ts 不变 = t-m+333）
+  快源 pop → audio_ts = t+1024
+```
+
+关键：慢源的 `audio_ts` 没有被推进！它仍然是 `t-m+333`。这为下一帧触发缓冲埋下了伏笔。
+
+### Tick N+1
+
+```
+ts 传入 = [t+1024, t+2048)
+
+push_back [t+1024, t+2048), peek_front → ts = [t+1024, t+2048)
+
+Step 2 — 渲染：
+  慢源 deque 攒够 1024 了 → peek → audio_pending = false
+  快源 ✓
+
+Step 3 — 缓冲判断：
+  calc_min_ts：慢源 audio_ts = t-m+333 < ts.start(t+1024) → ★ min_ts = t-m+333
+              min_ts < ts.start → ★ 触发 add_audio_buffering
+
+  add_audio_buffering：
+    落后 = 1024+m-333 帧，ticks = 2
+    push_front [t, t+1024), push_front [t-1024, t)
+    队列：[[t-1024,t), [t,t+1024), [t+1024,t+2048)]
+    *ts = [t-1024, t)，wait_ticks = 2
+
+Step 5 — 混音：
+  buffering_wait_ticks = 2 > 0 → ★ 跳过全部混音
+
+Step 6 — discard：
+  ts = [t-1024, t)
+  慢源：audio_ts = t-m+333 对齐到 ts.start(t-1024) → pop → audio_ts = t
+  快源：audio_ts = t+1024 >> ts.end(t) → 跳过，不弹
+
+buffering_wait_ticks-- → wait_ticks = 1
+return false（不输出，不做任何分发）
+```
+
+### Tick N+2
+
+```
+ts 传入 = [t+2048, t+3072)
+
+push_back [t+2048, t+3072), peek_front → ts = [t, t+1024)
+
+渲染、discard 全部基于 ts = [t, t+1024)
+混音跳过（wait_ticks = 1 > 0）
+
+buffering_wait_ticks-- → wait_ticks = 0
+return false（不输出）
+```
+
+### Tick N+3
+
+```
+ts 传入 = [t+3072, t+4096)
+
+push_back [t+3072, t+4096), peek_front → ts = [t+1024, t+2048)
+
+现在 wait_ticks = 0 → ★ 混音正常执行，输出！
+所有源的 audio_ts 对齐到 ts = [t+1024, t+2048)
+```
+
+两帧无声后恢复正常——总延迟增加了约 42ms。用户听不到任何异常。缓冲机制用 42ms 的额外延迟换来了两个源的重新对齐，整个过程对用户透明。
+
+---
+
+## 八、钳制与分发
+
+阶段 C（钳制）和阶段 D（分发）在 `audio_callback` 返回后由 `input_and_output` 调用。虽然代码不如回调内部复杂，但细节值得展开。
+
+### 8.1 `clamp_audio_output`：钳位与 NaN 处理
+
+```c
+// 先把 mix->buffer 整份复制到 mix->buffer_unclamped（保留原始值）
+// 再对 mix->buffer 做钳位：
+float val = *mix_data;
+val = (val == val) ? val : 0.0f;     // NaN → 0（NaN 不等于自己，很巧妙）
+val = (val > 1.0f)  ? 1.0f : val;
+val = (val < -1.0f) ? -1.0f : val;
+```
+
+consumer 可以通过 `allow_clipping` 标志选择用 raw 版（`buffer_unclamped`）还是 clamped 版（`buffer`）。大多数编码器用 clamped 版防止爆音，专业用户可能用 raw 版保留动态范围做后期处理。
+
+### 8.2 `do_audio_output`：广播给所有消费者
+
+`audio-io.c:107-130`
+
+```c
+static inline void do_audio_output(
+    struct audio_output *audio,
+    size_t mix_idx,           // 当前音轨编号（0~5）
+    uint64_t timestamp,       // 经 audio_callback 修正后的 new_ts
+    uint32_t frames)          // 固定 1024
+{
+    struct audio_mix *mix = &audio->mixes[mix_idx];
+    struct audio_data data;
+
+    pthread_mutex_lock(&audio->input_mutex);
+
+    // ★ 倒序遍历该音轨的所有消费者
+    for (size_t i = mix->inputs.num; i > 0; i--) {
+        struct audio_input *input = mix->inputs.array + (i - 1);
+
+        // ① 选钳位版还是未钳位版 buffer
+        float (*buf)[1024] = input->conversion.allow_clipping
+                             ? mix->buffer_unclamped : mix->buffer;
+
+        // ② 把 mix buffer 的平面指针绑进 data
+        for (size_t p = 0; p < audio->planes; p++)
+            data.data[p] = (uint8_t *)buf[p];
+
+        data.frames    = frames;
+        data.timestamp = timestamp;
+
+        // ③ 格式不匹配 → 重采样；成功 → 调消费者回调
+        if (resample_audio_output(input, &data))
+            input->callback(input->param, mix_idx, &data);
+    }
+
+    pthread_mutex_unlock(&audio->input_mutex);
+}
+```
+
+倒序原因：消费者回调中可能调 `audio_output_disconnect` 从数组里删除自己。倒着跑保证剩余未处理元素的索引不变。
+
+`input->callback` 的可能值：
+
+| 回调 | 注册者 | 用途 |
+|------|--------|------|
+| `receive_audio()` | 编码器（obs-encoder.c:375） | AAC/Opus 编码 |
+| `default_raw_audio_callback()` | 输出（obs-output.c:2453） | FFmpeg、重放缓冲 |
+| 任意函数 | `obs_add_raw_audio_callback` API | 第三方插件 |
+
+---
+
+## 九、监控去重消音
+
+当用户既启用了音频监控（在耳机里听自己的声音），又添加了"音频输出采集"源（采集桌面声音），且两者指向同一设备时，会产生回声。OBS 有一套去重消音机制：
 
 ```c
 static bool should_silence_monitored_source(obs_source_t *source,
@@ -799,9 +1352,9 @@ clear_audio_output_buf(source, audio);
 
 ---
 
-## 七、平台采集线程细节
+## 十、平台采集线程细节
 
-### 7.1 Windows WASAPI
+### 10.1 Windows WASAPI
 
 两个线程（RTWQ 不可用时）：
 
@@ -853,7 +1406,7 @@ while (!exit) {
 
 RTWQ（Real-Time Work Queue）可用时（Win10 1703+），采集线程不创建，改用 `RtwqPutWaitingWorkItem` 把工作提交到系统工作队列。
 
-### 7.2 macOS CoreAudio
+### 10.2 macOS CoreAudio
 
 CoreAudio 使用 `AudioUnit` 的 I/O 回调，**不创建独立的采集线程**——音频数据在 CoreAudio 内部的实时 I/O 线程上收到：
 
@@ -876,7 +1429,7 @@ static void *reconnect_thread(void *param) {
 }
 ```
 
-### 7.3 Linux PulseAudio
+### 10.3 Linux PulseAudio
 
 PulseAudio 使用 `pa_threaded_mainloop`——PulseAudio 库内部创建一个事件循环线程。OBS 不创建 pthread，而是注册回调：
 
@@ -896,116 +1449,138 @@ static void pulse_stream_read(pa_stream *p, size_t nbytes, void *userdata) {
 }
 ```
 
----
-
-## 八、完整数据流（从采集到编码/监控）
-
-把前面所有环节串起来，整个音频数据的流动全景如下：
-
-```
-┌─────────────────────────────────────────────────────────┐
-│ 采集线程（各平台实现）                                     │
-│                                                         │
-│ WASAPI CaptureThread / CoreAudio input_callback         │
-│ / PulseAudio stream_read / ALSA listen / OSS reader    │
-│   │                                                     │
-│   │ obs_source_output_audio(source, &raw_audio)        │
-│   │   ├── process_audio(source, &audio)                 │
-│   │   │     ├── reset_resampler (如果格式变了)           │
-│   │   │     ├── audio_resampler_resample (格式转换)      │
-│   │   │     ├── process_audio_balancing (左右平衡)      │
-│   │   │     └── downmix_to_mono_planar (强制单声道)     │
-│   │   ├── filter_async_audio(source, &audio)            │
-│   │   │     └── for each filter:                        │
-│   │   │           filter->info.filter_audio(in) → out   │
-│   │   └── source_output_audio_data(source, &data)       │
-│   │         └── deque_push_back(audio_input_buf[ch],    │
-│   │                               data, frames*4)       │
-│   ▼                                                     │
-│ source->audio_input_buf[0..7]  (每声道一个 deque)       │
-└─────────────────────┬───────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────┐
-│ audio-io 线程 (每 Tick = 1024 帧 = ~21.33ms)             │
-│                                                         │
-│ input_and_output(audio, audio_time, prev_time)          │
-│   │                                                     │
-│   ├─ 扫描活跃 mix (哪些有 consumer)                      │
-│   ├─ 清零 mix->buffer (32KB × 6)                        │
-│   │                                                     │
-│   ├─ audio_callback(param, prev_time, audio_time, ...) │
-│   │   │                                                 │
-│   │   ├─ buffered_timestamps: push 当前 ts, peek 队首   │
-│   │   │   (有缓冲时 peek 出来的是更早的 ts)              │
-│   │   │                                                 │
-│   │   ├─ 构建渲染树                                      │
-│   │   │   ├─ 遍历 scene/view channel → 递归枚举子源     │
-│   │   │   ├─ push_audio_tree2 (处理重复源)              │
-│   │   │   ├─ 遍历全局音源链表                            │
-│   │   │   → render_order (有序) + root_nodes (顶层)     │
-│   │   │                                                 │
-│   │   ├─ 渲染每个 source (按 render_order 顺序)          │
-│   │   │   ├─ obs_source_audio_render:                   │
-│   │   │   │   ├─ 渲染型音源 → custom_audio_render       │
-│   │   │   │   │     └─ source->info.audio_render()      │
-│   │   │   │   │        当场生成 1024 帧                  │
-│   │   │   │   ├─ 复合源 → audio_submix                  │
-│   │   │   │   │     └─ 累加子源 output_buf              │
-│   │   │   │   │     └─ obs_source_output_audio(self)   │
-│   │   │   │   │        过自己的 filter → push deque     │
-│   │   │   │   └─ → process_audio_source_tick            │
-│   │   │   │         deque_peek_front → output_buf       │
-│   │   │   │         memcpy 到各 mix → apply_volume      │
-│   │   │   │                                             │
-│   │   │   ├─ 监控去重消音 (should_silence)              │
-│   │   │   └─ 落后检测 (buffering_maxed && audio_ts落后) │
-│   │   │       ├─ 采集源 → ignore_audio (pop deque)      │
-│   │   │       └─ 渲染源 → pending (跳过混音)            │
-│   │   │                                                 │
-│   │   ├─ 缓冲管理                                       │
-│   │   │   ├─ calc_min_ts (找最落后的源)                 │
-│   │   │   └─ add_audio_buffering (往队首插旧 ts)        │
-│   │   │                                                 │
-│   │   ├─ mix_audio (root_nodes → 累加到 mix buffer)     │
-│   │   ├─ discard_audio (弹出已消费数据)                  │
-│   │   └─ execute_audio_tasks (OBS_TASK_AUDIO 任务)     │
-│   │                                                     │
-│   ├─ clamp_audio_output ([-1.0, 1.0])                  │
-│   └─ do_audio_output (逐 consumer 分发)                 │
-│       ├─ 选择 clamped / unclamped buffer                │
-│       ├─ 需要时重采样                                   │
-│       └─ input->callback(param, mix_idx, &data)        │
-│           ├─ receive_audio(encoder) → buffer_audio      │
-│           │     → deque_push_back → do_encode           │
-│           └─ on_audio_playback(monitor) → 平台播放      │
-└─────────────────────────────────────────────────────────┘
-```
+三种平台的采集方式虽不同，但**最终汇入 OBS 管线的入口完全一致**——都是 `obs_source_output_audio()`。这就是 OBS 跨平台音频架构的设计精髓：平台差异在采集层隔离，核心管线完全统一。
 
 ---
 
-## 九、一些容易踩的命名坑
+## 十一、完整数据流全景
+
+把前面所有环节串起来，整个音频数据的流动全景如下。这张图同时包含了**音频线程侧**（上）和**采集源输入侧**（下），两个方向的数据流一目了然：
+
+```
+audio_thread()  [audio-io.c:205]  ← 独立线程，"audio-io: audio thread"
+  │                                  每 1024 帧跑一次，创建于 audio_output_open()
+  │
+  ├─ ① input_and_output()  [audio-io.c:231]  ← 一帧音频的全部处理入口
+  │     │
+  │     ├─ 阶段 A · 渲染 ──────────────────────────────────────
+  │     │   清空 mix buffer → 构建渲染树 → 逐源渲染 → 混音 → 清理
+  │     │
+  │     │   audio->input_cb() 即 audio_callback()  [obs-audio.c:555]
+  │     │     │
+  │     │     ├─ ① push_back ts 到 buffered_timestamps 队尾
+  │     │     │
+  │     │     ├─ ② 构建渲染树
+  │     │     │   ├─ 遍历 video mixes → view channels → source 树
+  │     │     │   │   ├─ push_audio_tree2() — 深搜，查重升级
+  │     │     │   │   └─ push_audio_tree()  — 顶层源加入
+  │     │     │   └─ 遍历 first_audio_source 链表 — 兜底
+  │     │     │
+  │     │     ├─ ③ 渲染每个源（按 render_order）
+  │     │     │   └─ obs_source_audio_render()
+  │     │     │       ├─ scene 类 → custom_audio_render() → audio_render 回调
+  │     │     │       ├─ submix 类 → audio_submix() → audio_mix 回调
+  │     │     │       └─ 普通源  → process_audio_source_tick()
+  │     │     │                     peek input_buf → output_buf → apply_volume
+  │     │     │
+  │     │     ├─ ④ calc_min_ts() → 缓冲判断
+  │     │     │   ├─ fixed_buffer → set_fixed_audio_buffering()
+  │     │     │   └─ min_ts < ts.start → add_audio_buffering()
+  │     │     │         → deque_push_front(buffered_timestamps, 旧区间)
+  │     │     │         → buffering_wait_ticks++
+  │     │     │
+  │     │     ├─ ⑤ peek_front(buffered_timestamps) → 获取实际使用的 ts
+  │     │     │
+  │     │     ├─ ⑥ 落后源硬兜底（缓冲 maxed 时）
+  │     │     │   ├─ 采集源 → ignore_audio() → pop deque 丢帧
+  │     │     │   └─ 渲染型源 → audio_pending = true
+  │     │     │
+  │     │     ├─ ⑦ 混音（按 root_nodes，wait_ticks == 0 时才执行）
+  │     │     │   └─ mix_audio(): mixes[mix].data[ch][i] += source.output_buf[mix][ch][i]
+  │     │     │
+  │     │     └─ ⑧ 清理
+  │     │         ├─ discard_audio(): deque_pop_front(audio_input_buf)
+  │     │         ├─ release_audio_sources()
+  │     │         └─ deque_pop_front(buffered_timestamps)
+  │     │
+  │     ├─ 阶段 C · 钳制 ─────────────────────────────────────
+  │     │   clamp_audio_output() — 钳到 [-1.0, 1.0]，保留 unclamped 副本
+  │     │
+  │     └─ 阶段 D · 分发 ─────────────────────────────────────
+  │         do_audio_output() — 广播给所有消费者
+  │           ├─ receive_audio()           — 编码路径
+  │           ├─ default_raw_audio_callback() — 原始 PCM 路径
+  │           └─ obs_add_raw_audio_callback() — 第三方插件
+  │
+  └─ os_sleepto_ns_fast(audio_time)  ← 精确睡眠到下一帧
+
+
+  音频数据输入路径（异步，由各采集源线程调用）
+
+  obs_source_output_audio()  [obs-source.c:4029]
+    ├─ process_audio()           — 重采样 / 平衡 / 强制单声道
+    ├─ filter_async_audio()      — filter 链（责任链模式）
+    └─ source_output_audio_data()
+          ├─ deque_push_back(audio_input_buf)  — 排队等待音频线程消费
+          └─ source_signal_audio_data()
+                ├─ on_audio_playback()          — 音频监听输出
+                └─ volmeter_source_data_received() — VU 表
+```
+
+上面是音频线程侧（消费端），下面是采集源侧（生产端）。生产者只管往 deque 里塞数据，消费者按 1024 帧的节奏取出、渲染、混音、分发。两端通过 `audio_input_buf` 解耦。生产者和消费者跑在不同线程上，这也是为什么需要缓冲管理——两端的时间戳不可能天然对齐。
+
+---
+
+## 十二、关键数据结构速查
+
+贯穿全文的核心数据结构汇总：
+
+| 字段 | 位置 | 含义 |
+|------|------|------|
+| `obs_core_audio.render_order` | obs-internal.h | 本帧渲染顺序（叶子在前，父源在后） |
+| `obs_core_audio.root_nodes` | obs-internal.h | 混音根节点（顶层源 + 去重升级源） |
+| `obs_core_audio.buffered_timestamps` | obs-internal.h:449 | 时间戳 deque，缓冲机制的时钟核心 |
+| `obs_core_audio.buffering_wait_ticks` | obs-internal.h:450 | 缓冲等待倒计时（>0 时跳过混音） |
+| `obs_core_audio.buffered_ts` | obs-internal.h:448 | 缓冲触发瞬间的锚点时间戳 |
+| `obs_core_audio.total_buffering_ticks` | obs-internal.h | 累计缓冲量（达到 max 后触发硬兜底） |
+| `obs_source.audio_ts` | obs-internal.h:867 | 源已产数据到哪个时间点（缓冲判断的关键信号） |
+| `obs_source.audio_input_buf[ch]` | obs-internal.h:868 | 采集线程推入的 deque（生产者-消费者缓冲区） |
+| `obs_source.audio_output_buf[mix][ch]` | obs-internal.h:871 | 源渲染输出的 1024 float buffer（单次 Tick 的工作区） |
+| `obs_source.audio_mix_buf[ch]` | obs-internal.h | submix 源的累加缓冲区 |
+| `obs_source.audio_pending` | obs-internal.h | 标记本帧该源数据不足，跳过混音 |
+| `obs_source.audio_is_duplicated` | obs-internal.h | 标记该源在音频树中重复出现 |
+| `audio_output_info.input_callback` | audio-io.h | = audio_callback，在 obs.c:1646 绑定 |
+| `audio_mix.buffer[planes][1024]` | audio-io.h | mix 的混音输出 buffer（每 Tick 清空重填） |
+| `audio_mix.buffer_unclamped` | audio-io.h | 未钳位的副本（供有需要的消费者使用） |
+
+---
+
+## 十三、容易踩的命名坑
 
 - **`obs_core_data`** 不是"音频数据"——它是全局对象注册中心，all sources/outputs/encoders/displays 的链表头都在里面。`audio_callback` 只用了 `first_audio_source` 和 `audio_sources_mutex`
-- **`audio_callback`** 不是采集回调——采集回调是各平台的 WASAPI/CoreAudio/PulseAudio 回调。`audio_callback` 是混音引擎的入口
+- **`audio_callback`** 不是采集回调——采集回调是各平台的 WASAPI/CoreAudio/PulseAudio 回调。`audio_callback` 是混音引擎的入口，参数由 `input_and_output` 传入
 - **`input_callback`** 的命名是从 `audio_output` 模块视角看的——"你给我输入数据"，所以叫 input。对 OBS 整体来说它是混音渲染核心
 - **`audio_size = 1024 × sizeof(float)`** 是**单声道的字节数**，因为 OBS 内部用 planar 格式，每个声道独立 buffer
 - **`block_size`** 也是单声道单采样点字节数，planar float 下 = 4
+- **view channel ≠ 音频声道**：view channel 是源槽位（最多 64 个），音频声道是物理声道数。两者在变量名上容易混淆
 
 ---
 
 ## 小结
 
-读音频子系统的这几天，最大的感受是和视频管线在思路上高度对称——都有独立的核心时钟线程、都有按需消费的机制、都用 deque 做缓冲解耦。OBS 音频子系统的设计可以用几个词概括：
+读音频子系统的这段时间，最大的感受是和视频管线在思路上高度对称——都有独立的核心时钟线程、都有按需消费的机制、都用 deque 做缓冲解耦。把 OBS 音频子系统的设计用几个词概括：
 
 - **一个时钟**：audio-io 线程，固定 1024 帧节奏，从 `start_time` 绝对推导，永不漂移
+- **一个核心回调**：`audio_callback`，六个阶段覆盖构建→渲染→缓冲→兜底→混音→清理
+- **一个队列**：`buffered_timestamps`，用双端队列的 push_front/push_back 实现处理窗口的时间旅行
 - **N 个生产者**：各平台采集线程，通过 `obs_source_output_audio` 统一入口推 deque
 - **每源一个 deque**：环形双端队列解耦生产者和消费者
-- **两级缓冲**：动态缓冲用延迟换稳定性（缓冲未满拉回 ts → 缓冲满后才丢数据 / pending）
+- **两级缓冲**：动态缓冲用延迟换稳定性 → 缓冲满后才丢数据 / pending
 - **两层 filter**：子源 filter（单路处理）+ 复合源 filter（总线处理），各管各的
+- **三路径渲染**：`audio_render`（容器源自主）→ `audio_mix`（submix 预留）→ 默认 peek deque
 - **6 个 mix**：多轨输出的基础，每个 source 的 `audio_mixers` 决定去哪些轨道
 
-理解了这些，再去看 WASAPI/PulseAudio/CoreAudio 的具体实现、音频编码器、监控输出，就都有清晰的上下文了。
+`audio_callback` 是当之无愧的心脏——它每 21.33ms 跳动一次，把散落在各线程的音频数据收集起来，对齐时间戳、处理缓冲、混音叠加，最后分发给编码器和监控。理解了 `buffered_timestamps` 的三步走和六个阶段的协作方式，整个 OBS 音频子系统就尽在掌握。
 
 ---
 

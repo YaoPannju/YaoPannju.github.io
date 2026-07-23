@@ -262,6 +262,11 @@
         color: rgba(255, 255, 255, 0.9);
     }
 
+    /* ---------- 右侧 TOC 目录：去掉 CSS 自动编号，避免和标题手动编号重复 ---------- */
+    .toc-nav ol li a:first-of-type::before {
+        content: none !important;
+    }
+
     /* ---------- 表格：去掉浅色斑马纹，统一深色半透明 ---------- */
     .article-content table tr:nth-child(even) {
         background-color: rgba(255, 255, 255, 0.03) !important;

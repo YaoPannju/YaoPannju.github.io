@@ -24,7 +24,12 @@
       "Bash(./hugo.exe *)",
       "Bash(git checkout *)",
       "Bash(hugo --buildDrafts)",
-      "Bash(grep -c \"^---$\" \"/mnt/c/Users/admin/Desktop/个人博客/hugo-test/content/post/obs-studio-audio-thread/index.md\")"
+      "Bash(grep -c \"^---$\" \"/mnt/c/Users/admin/Desktop/个人博客/hugo-test/content/post/obs-studio-audio-thread/index.md\")",
+      "Bash(push_audio_tree2)",
+      "Bash(grep -n \"`push_audio_tree2` 多了重复检测\" \"/mnt/c/Users/admin/Desktop/个人博客/hugo-test/content/post/obs-studio-audio-thread/index.md\")",
+      "Bash(hugo --quiet)",
+      "Bash(grep -n '```' /mnt/c/Users/admin/Desktop/个人博客/hugo-test/content/post/obs-studio-audio-thread/index.md)",
+      "Bash(awk 'NR%2==1{open=$0} NR%2==0{print open; print $0; print \"---\"}')"
     ]
   }
 }

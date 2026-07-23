@@ -280,6 +280,11 @@
     }
 
      
+    .toc-nav ol li a:first-of-type::before {
+        content: none !important;
+    }
+
+     
     .article-content table tr:nth-child(even) {
         background-color: rgba(255, 255, 255, 0.03) !important;
     }
@@ -394,6 +399,7 @@
         <li><a href="#11-启动链路">1.1 启动链路</a></li>
         <li><a href="#12-主循环">1.2 主循环</a></li>
         <li><a href="#13-input_and_output-逐行解析">1.3 <code>input_and_output</code> 逐行解析</a></li>
+        <li><a href="#14-四个处理阶段概览">1.4 四个处理阶段概览</a></li>
       </ol>
     </li>
     <li><a href="#二音频树是怎么构建的">二、音频树是怎么构建的</a>
@@ -511,7 +517,7 @@
 
 
                     <time class="article-time--reading">
-                        阅读时长: 19 分钟
+                        阅读时长: 21 分钟
                     </time>
                 
             </div>
@@ -543,6 +549,7 @@
         <li><a href="#11-启动链路">1.1 启动链路</a></li>
         <li><a href="#12-主循环">1.2 主循环</a></li>
         <li><a href="#13-input_and_output-逐行解析">1.3 <code>input_and_output</code> 逐行解析</a></li>
+        <li><a href="#14-四个处理阶段概览">1.4 四个处理阶段概览</a></li>
       </ol>
     </li>
     <li><a href="#二音频树是怎么构建的">二、音频树是怎么构建的</a>
@@ -881,9 +888,97 @@
 <li>如果 consumer 要求的格式/采样率/声道跟 OBS 内部不一样，调 <code>audio_resampler_resample</code></li>
 <li>调用 <code>input-&gt;callback(param, mix_idx, &amp;data)</code>，即 <code>receive_audio</code>（编码器）或 <code>on_audio_playback</code>（监控）</li>
 </ul>
+<h3 id="14-四个处理阶段概览">1.4 四个处理阶段概览
+</h3><p><code>input_and_output</code> 内部做的事情可以清晰地分成 A/B/C/D 四个阶段，这个框架贯穿整个音频线程：</p>
+<div class="table-wrapper"><table>
+	<thead>
+			<tr>
+					<th>阶段</th>
+					<th>名称</th>
+					<th>核心动作</th>
+					<th>位置</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td><strong>A</strong></td>
+					<td>渲染（Render）</td>
+					<td>构建渲染树 → 逐源产出 <code>output_buf</code> → 累加到 mix buffer → 清理已消费数据</td>
+					<td><code>audio_callback()</code></td>
+			</tr>
+			<tr>
+					<td><strong>B</strong></td>
+					<td>缓冲管理（Buffering）</td>
+					<td><code>calc_min_ts()</code> 找最早时间戳 → 如有滞后源，回退处理窗口 → 上限到了就丢帧</td>
+					<td><code>input_and_output</code> 后段</td>
+			</tr>
+			<tr>
+					<td><strong>C</strong></td>
+					<td>钳制（Clamp）</td>
+					<td>混音值钳到 [-1.0, 1.0]，NaN→0，同时保留 unclamped 副本</td>
+					<td><code>clamp_audio_output()</code></td>
+			</tr>
+			<tr>
+					<td><strong>D</strong></td>
+					<td>分发（Output）</td>
+					<td>混音完成的 mix buffer 广播给所有订阅者（编码器/raw output/插件）</td>
+					<td><code>do_audio_output()</code></td>
+			</tr>
+	</tbody>
+</table></div>
+<p>阶段 A 是文章二、三、四节的内容（渲染树构建 + 渲染 + 混音），阶段 B 是第五节（缓冲管理），阶段 C 和 D 在一.3 里已经讲过了。这里补充两个一.3 没展开的细节：</p>
+<p><strong>阶段 C 的 NaN 处理：</strong></p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span><span class="lnt">4
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="kt">float</span> <span class="n">val</span> <span class="o">=</span> <span class="o">*</span><span class="n">mix_data</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="n">val</span> <span class="o">=</span> <span class="p">(</span><span class="n">val</span> <span class="o">==</span> <span class="n">val</span><span class="p">)</span> <span class="o">?</span> <span class="nl">val</span> <span class="p">:</span> <span class="mf">0.0f</span><span class="p">;</span>     <span class="c1">// NaN → 0（NaN 不等于自己，这个特性很巧妙）
+</span></span></span><span class="line"><span class="cl"><span class="n">val</span> <span class="o">=</span> <span class="p">(</span><span class="n">val</span> <span class="o">&gt;</span> <span class="mf">1.0f</span><span class="p">)</span>  <span class="o">?</span> <span class="mf">1.0f</span> <span class="o">:</span> <span class="n">val</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="n">val</span> <span class="o">=</span> <span class="p">(</span><span class="n">val</span> <span class="o">&lt;</span> <span class="o">-</span><span class="mf">1.0f</span><span class="p">)</span> <span class="o">?</span> <span class="o">-</span><span class="mf">1.0f</span> <span class="o">:</span> <span class="n">val</span><span class="p">;</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p><strong>阶段 D 的三类消费者：</strong></p>
+<div class="table-wrapper"><table>
+	<thead>
+			<tr>
+					<th>消费者类型</th>
+					<th>注册位置</th>
+					<th>回调</th>
+					<th>用途</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td>音频编码器</td>
+					<td><code>obs-encoder.c:375</code></td>
+					<td><code>receive_audio()</code></td>
+					<td>AAC/Opus 编码 → 推流/录制</td>
+			</tr>
+			<tr>
+					<td>原始音频输出</td>
+					<td><code>obs-output.c:2453</code></td>
+					<td><code>default_raw_audio_callback()</code></td>
+					<td>FFmpeg muxer、重放缓冲</td>
+			</tr>
+			<tr>
+					<td>外部插件/用户</td>
+					<td><code>obs.c:3165</code>（公共 API）</td>
+					<td>自定义</td>
+					<td>第三方拿最终混音数据</td>
+			</tr>
+	</tbody>
+</table></div>
+<p>本质是一个<strong>发布-订阅</strong>模式：前面 A/B/C 阶段把数据准备好，阶段 D 通知所有订阅者来取。拿到数据后是编码、写文件还是做别的，消费者自己决定。</p>
 <hr>
 <h2 id="二音频树是怎么构建的">二、音频树是怎么构建的
 </h2><p>这是整个音频系统里最容易搞混的地方。<code>audio_callback</code> 每 Tick 都要重建两个列表：<code>render_order</code> 和 <code>root_nodes</code>。</p>
+<p>在深入构建过程之前，先澄清一个容易混淆的概念：<strong>view channel 和音频声道是两码事</strong>。view channel 是源槽位——一个 view 有 64 个输入口，每个口插一个 source。不同 mix = 不同画面输出，同一 mix 的不同 channel = 同一画面上的图层叠加。音频线程借道 view 来发现&quot;有哪些 source 需要处理音频&quot;——&ldquo;画面上有哪些 source 在活动？把它们的音频也拉进来。&rdquo;</p>
+<p>真正让音频&quot;分流到不同输出&quot;的，不是 view channel，而是每个 source 上的 <code>audio_mixers</code> 位掩码——控制这个 source 的音频数据拷贝到第几个 audio mix。这和 view channel 是完全正交的两套机制。</p>
 <h3 id="21-推入函数">2.1 推入函数
 </h3><p><strong><code>push_audio_tree(parent, source, audio)</code></strong>（obs-audio.c:30-43）：</p>
 <div class="highlight"><div class="chroma">
@@ -971,6 +1066,20 @@
 </span></span></code></pre></td></tr></table>
 </div>
 </div><p><code>push_audio_tree2</code> 多了重复检测：如果同一个 source 在多条音频路径里出现了（比如同一麦克风源被放在两个 Scene 的不同 Group 里），只把它作为一个独立的 root_node 混入 mix，而不是在每个子路径上都混一次。这就是 <code>audio_is_duplicated</code> 标记的作用。</p>
+<p><strong>&ldquo;独立音频源&quot;的判断标准</strong>（只有满足全部三个条件才升级为 root_node）：</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-c" data-lang="c"><span class="line"><span class="cl"><span class="n">type</span> <span class="o">==</span> <span class="n">OBS_SOURCE_TYPE_INPUT</span>
+</span></span><span class="line"><span class="cl"><span class="o">&amp;&amp;</span> <span class="p">(</span><span class="n">output_flags</span> <span class="o">&amp;</span> <span class="n">OBS_SOURCE_AUDIO</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="o">&amp;&amp;</span> <span class="o">!</span><span class="p">(</span><span class="n">output_flags</span> <span class="o">&amp;</span> <span class="n">OBS_SOURCE_COMPOSITE</span><span class="p">)</span>
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>即：是输入源、有音频能力、不是复合源（非 scene/group/transition）。复合源（如 Scene）自己出现在多个地方时不会升级——它们的子源已经由各自的 <code>push_audio_tree2</code> 处理过了。</p>
 <h3 id="22-构建过程">2.2 构建过程
 </h3><p>在 <code>audio_callback</code> 里：</p>
 <div class="highlight"><div class="chroma">
@@ -1537,7 +1646,7 @@
 </span></span><span class="line"><span class="cl"><span class="p">}</span>
 </span></span></code></pre></td></tr></table>
 </div>
-</div><p>这一步的设计很精妙：复合源把子源的 output 累加后，当作&quot;自己的原始音频&quot;，再走一遍 <code>obs_source_output_audio</code> → <code>process_audio</code> → <code>filter_async_audio</code> → push deque。然后路径 3 的 <code>process_audio_source_tick</code> 再从 deque 取出来。这意味着复合源挂的 filter（如总线压缩）会作用于子源的混音结果。</p>
+</div><p>这一步的设计很精妙：复合源把子源的 output 累加后，当作&quot;自己的原始音频&rdquo;，再走一遍 <code>obs_source_output_audio</code> → <code>process_audio</code> → <code>filter_async_audio</code> → push deque。然后路径 3 的 <code>process_audio_source_tick</code> 再从 deque 取出来。这意味着复合源挂的 filter（如总线压缩）会作用于子源的混音结果。</p>
 <h3 id="43-路径-3process_audio_source_tick--从-deque-取数据输出">4.3 路径 3：<code>process_audio_source_tick</code> —— 从 deque 取数据输出
 </h3><div class="highlight"><div class="chroma">
 <table class="lntable"><tr><td class="lntd">
@@ -1643,6 +1752,27 @@
 </div>
 </div><p>正常情况：<code>source-&gt;audio_ts &gt;= ts.start</code>，源的数据覆盖了 ts 区间，直接渲染。</p>
 <p>落后情况：<code>source-&gt;audio_ts &lt; ts.start</code>，源的数据产得不够快。</p>
+<div class="highlight"><div class="chroma">
+<table class="lntable"><tr><td class="lntd">
+<pre tabindex="0" class="chroma"><code><span class="lnt">1
+</span><span class="lnt">2
+</span><span class="lnt">3
+</span><span class="lnt">4
+</span><span class="lnt">5
+</span></code></pre></td>
+<td class="lntd">
+<pre tabindex="0" class="chroma"><code class="language-fallback" data-lang="fallback"><span class="line"><span class="cl">USB 麦克风:  ████████  ← T₁ = 100ns
+</span></span><span class="line"><span class="cl">桌面音频:          ████████  ← T₂ = 105ns（比麦克风晚了 5ms）
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">当前处理窗口: [100, 121)
+</span></span><span class="line"><span class="cl">               ↑ 麦克风有数据 ✓    桌面音频还没到 ✗
+</span></span></code></pre></td></tr></table>
+</div>
+</div><p>缓冲管理的本质就是<strong>回退处理窗口</strong>——往 <code>buffered_timestamps</code> 队首插更早的时间戳，相当于把处理窗口回退，给滞后源一点时间赶上。两种策略：</p>
+<ul>
+<li><strong><code>fixed_buffer</code></strong>：启动时直接垫满预设值（如 20ms），一步到位</li>
+<li><strong>动态（默认）</strong>：启动时缓冲为 0，遇到滞后源逐帧增加，最多到 <code>max_buffering_ticks</code>（默认 45 帧 ≈ 960ms @ 48kHz）</li>
+</ul>
 <h3 id="52-动态缓冲add_audio_buffering">5.2 动态缓冲：<code>add_audio_buffering</code>
 </h3><div class="highlight"><div class="chroma">
 <table class="lntable"><tr><td class="lntd">
@@ -2142,7 +2272,7 @@
 </div>
 </div><hr>
 <h2 id="八完整数据流从采集到编码监控">八、完整数据流（从采集到编码/监控）
-</h2><p>把前面所有环节串起来，整个音频数据的流动全景如下：</p>
+</h2><p>把前面所有环节串起来，整个音频数据的流动全景如下。这张图同时包含了<strong>音频线程侧</strong>（上）和<strong>采集源输入侧</strong>（下），两个方向的数据流一目了然：</p>
 <div class="highlight"><div class="chroma">
 <table class="lntable"><tr><td class="lntd">
 <pre tabindex="0" class="chroma"><code><span class="lnt"> 1
@@ -2198,112 +2328,65 @@
 </span><span class="lnt">51
 </span><span class="lnt">52
 </span><span class="lnt">53
-</span><span class="lnt">54
-</span><span class="lnt">55
-</span><span class="lnt">56
-</span><span class="lnt">57
-</span><span class="lnt">58
-</span><span class="lnt">59
-</span><span class="lnt">60
-</span><span class="lnt">61
-</span><span class="lnt">62
-</span><span class="lnt">63
-</span><span class="lnt">64
-</span><span class="lnt">65
-</span><span class="lnt">66
-</span><span class="lnt">67
-</span><span class="lnt">68
-</span><span class="lnt">69
-</span><span class="lnt">70
-</span><span class="lnt">71
-</span><span class="lnt">72
-</span><span class="lnt">73
-</span><span class="lnt">74
-</span><span class="lnt">75
-</span><span class="lnt">76
-</span><span class="lnt">77
 </span></code></pre></td>
 <td class="lntd">
-<pre tabindex="0" class="chroma"><code class="language-fallback" data-lang="fallback"><span class="line"><span class="cl">┌─────────────────────────────────────────────────────────┐
-</span></span><span class="line"><span class="cl">│ 采集线程（各平台实现）                                     │
-</span></span><span class="line"><span class="cl">│                                                         │
-</span></span><span class="line"><span class="cl">│ WASAPI CaptureThread / CoreAudio input_callback         │
-</span></span><span class="line"><span class="cl">│ / PulseAudio stream_read / ALSA listen / OSS reader    │
-</span></span><span class="line"><span class="cl">│   │                                                     │
-</span></span><span class="line"><span class="cl">│   │ obs_source_output_audio(source, &amp;raw_audio)        │
-</span></span><span class="line"><span class="cl">│   │   ├── process_audio(source, &amp;audio)                 │
-</span></span><span class="line"><span class="cl">│   │   │     ├── reset_resampler (如果格式变了)           │
-</span></span><span class="line"><span class="cl">│   │   │     ├── audio_resampler_resample (格式转换)      │
-</span></span><span class="line"><span class="cl">│   │   │     ├── process_audio_balancing (左右平衡)      │
-</span></span><span class="line"><span class="cl">│   │   │     └── downmix_to_mono_planar (强制单声道)     │
-</span></span><span class="line"><span class="cl">│   │   ├── filter_async_audio(source, &amp;audio)            │
-</span></span><span class="line"><span class="cl">│   │   │     └── for each filter:                        │
-</span></span><span class="line"><span class="cl">│   │   │           filter-&gt;info.filter_audio(in) → out   │
-</span></span><span class="line"><span class="cl">│   │   └── source_output_audio_data(source, &amp;data)       │
-</span></span><span class="line"><span class="cl">│   │         └── deque_push_back(audio_input_buf[ch],    │
-</span></span><span class="line"><span class="cl">│   │                               data, frames*4)       │
-</span></span><span class="line"><span class="cl">│   ▼                                                     │
-</span></span><span class="line"><span class="cl">│ source-&gt;audio_input_buf[0..7]  (每声道一个 deque)       │
-</span></span><span class="line"><span class="cl">└─────────────────────┬───────────────────────────────────┘
-</span></span><span class="line"><span class="cl">                      │
-</span></span><span class="line"><span class="cl">                      ▼
-</span></span><span class="line"><span class="cl">┌─────────────────────────────────────────────────────────┐
-</span></span><span class="line"><span class="cl">│ audio-io 线程 (每 Tick = 1024 帧 = ~21.33ms)             │
-</span></span><span class="line"><span class="cl">│                                                         │
-</span></span><span class="line"><span class="cl">│ input_and_output(audio, audio_time, prev_time)          │
-</span></span><span class="line"><span class="cl">│   │                                                     │
-</span></span><span class="line"><span class="cl">│   ├─ 扫描活跃 mix (哪些有 consumer)                      │
-</span></span><span class="line"><span class="cl">│   ├─ 清零 mix-&gt;buffer (32KB × 6)                        │
-</span></span><span class="line"><span class="cl">│   │                                                     │
-</span></span><span class="line"><span class="cl">│   ├─ audio_callback(param, prev_time, audio_time, ...) │
-</span></span><span class="line"><span class="cl">│   │   │                                                 │
-</span></span><span class="line"><span class="cl">│   │   ├─ buffered_timestamps: push 当前 ts, peek 队首   │
-</span></span><span class="line"><span class="cl">│   │   │   (有缓冲时 peek 出来的是更早的 ts)              │
-</span></span><span class="line"><span class="cl">│   │   │                                                 │
-</span></span><span class="line"><span class="cl">│   │   ├─ 构建渲染树                                      │
-</span></span><span class="line"><span class="cl">│   │   │   ├─ 遍历 scene/view channel → 递归枚举子源     │
-</span></span><span class="line"><span class="cl">│   │   │   ├─ push_audio_tree2 (处理重复源)              │
-</span></span><span class="line"><span class="cl">│   │   │   ├─ 遍历全局音源链表                            │
-</span></span><span class="line"><span class="cl">│   │   │   → render_order (有序) + root_nodes (顶层)     │
-</span></span><span class="line"><span class="cl">│   │   │                                                 │
-</span></span><span class="line"><span class="cl">│   │   ├─ 渲染每个 source (按 render_order 顺序)          │
-</span></span><span class="line"><span class="cl">│   │   │   ├─ obs_source_audio_render:                   │
-</span></span><span class="line"><span class="cl">│   │   │   │   ├─ 渲染型音源 → custom_audio_render       │
-</span></span><span class="line"><span class="cl">│   │   │   │   │     └─ source-&gt;info.audio_render()      │
-</span></span><span class="line"><span class="cl">│   │   │   │   │        当场生成 1024 帧                  │
-</span></span><span class="line"><span class="cl">│   │   │   │   ├─ 复合源 → audio_submix                  │
-</span></span><span class="line"><span class="cl">│   │   │   │   │     └─ 累加子源 output_buf              │
-</span></span><span class="line"><span class="cl">│   │   │   │   │     └─ obs_source_output_audio(self)   │
-</span></span><span class="line"><span class="cl">│   │   │   │   │        过自己的 filter → push deque     │
-</span></span><span class="line"><span class="cl">│   │   │   │   └─ → process_audio_source_tick            │
-</span></span><span class="line"><span class="cl">│   │   │   │         deque_peek_front → output_buf       │
-</span></span><span class="line"><span class="cl">│   │   │   │         memcpy 到各 mix → apply_volume      │
-</span></span><span class="line"><span class="cl">│   │   │   │                                             │
-</span></span><span class="line"><span class="cl">│   │   │   ├─ 监控去重消音 (should_silence)              │
-</span></span><span class="line"><span class="cl">│   │   │   └─ 落后检测 (buffering_maxed &amp;&amp; audio_ts落后) │
-</span></span><span class="line"><span class="cl">│   │   │       ├─ 采集源 → ignore_audio (pop deque)      │
-</span></span><span class="line"><span class="cl">│   │   │       └─ 渲染源 → pending (跳过混音)            │
-</span></span><span class="line"><span class="cl">│   │   │                                                 │
-</span></span><span class="line"><span class="cl">│   │   ├─ 缓冲管理                                       │
-</span></span><span class="line"><span class="cl">│   │   │   ├─ calc_min_ts (找最落后的源)                 │
-</span></span><span class="line"><span class="cl">│   │   │   └─ add_audio_buffering (往队首插旧 ts)        │
-</span></span><span class="line"><span class="cl">│   │   │                                                 │
-</span></span><span class="line"><span class="cl">│   │   ├─ mix_audio (root_nodes → 累加到 mix buffer)     │
-</span></span><span class="line"><span class="cl">│   │   ├─ discard_audio (弹出已消费数据)                  │
-</span></span><span class="line"><span class="cl">│   │   └─ execute_audio_tasks (OBS_TASK_AUDIO 任务)     │
-</span></span><span class="line"><span class="cl">│   │                                                     │
-</span></span><span class="line"><span class="cl">│   ├─ clamp_audio_output ([-1.0, 1.0])                  │
-</span></span><span class="line"><span class="cl">│   └─ do_audio_output (逐 consumer 分发)                 │
-</span></span><span class="line"><span class="cl">│       ├─ 选择 clamped / unclamped buffer                │
-</span></span><span class="line"><span class="cl">│       ├─ 需要时重采样                                   │
-</span></span><span class="line"><span class="cl">│       └─ input-&gt;callback(param, mix_idx, &amp;data)        │
-</span></span><span class="line"><span class="cl">│           ├─ receive_audio(encoder) → buffer_audio      │
-</span></span><span class="line"><span class="cl">│           │     → deque_push_back → do_encode           │
-</span></span><span class="line"><span class="cl">│           └─ on_audio_playback(monitor) → 平台播放      │
-</span></span><span class="line"><span class="cl">└─────────────────────────────────────────────────────────┘
+<pre tabindex="0" class="chroma"><code class="language-gdscript3" data-lang="gdscript3"><span class="line"><span class="cl"><span class="n">audio_thread</span><span class="p">()</span>  <span class="p">[</span><span class="n">audio</span><span class="o">-</span><span class="n">io</span><span class="o">.</span><span class="n">c</span><span class="p">:</span><span class="mi">205</span><span class="p">]</span>  <span class="err">←</span> <span class="err">独立线程，</span><span class="s2">&#34;audio-io: audio thread&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>                                  <span class="err">每</span> <span class="mi">1024</span> <span class="err">帧跑一次，创建于</span> <span class="n">audio_output_open</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>
+</span></span><span class="line"><span class="cl">  <span class="err">├─</span> <span class="err">①</span> <span class="n">input_and_output</span><span class="p">()</span>  <span class="p">[</span><span class="n">audio</span><span class="o">-</span><span class="n">io</span><span class="o">.</span><span class="n">c</span><span class="p">:</span><span class="mi">231</span><span class="p">]</span>  <span class="err">←</span> <span class="err">一帧音频的全部处理入口</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">├─</span> <span class="err">阶段</span> <span class="n">A</span> <span class="err">·</span> <span class="err">渲染</span> <span class="err">──────────────────────────────────────</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>   <span class="err">清空</span> <span class="n">mix</span> <span class="n">buffer</span> <span class="err">→</span> <span class="err">构建渲染树</span> <span class="err">→</span> <span class="err">逐源渲染</span> <span class="err">→</span> <span class="err">混音</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>   <span class="n">audio</span><span class="o">-&gt;</span><span class="n">input_cb</span><span class="p">()</span> <span class="err">即</span> <span class="n">audio_callback</span><span class="p">()</span>  <span class="p">[</span><span class="n">obs</span><span class="o">-</span><span class="n">audio</span><span class="o">.</span><span class="n">c</span><span class="p">:</span><span class="mi">555</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>     <span class="err">│</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>     <span class="err">├─</span> <span class="err">构建渲染树</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>     <span class="err">│</span>   <span class="err">├─</span> <span class="err">遍历</span> <span class="n">video</span> <span class="n">mixes</span> <span class="err">→</span> <span class="n">view</span> <span class="n">channels</span> <span class="err">→</span> <span class="n">source</span> <span class="err">树</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>     <span class="err">│</span>   <span class="err">│</span>   <span class="err">├─</span> <span class="n">push_audio_tree2</span><span class="p">()</span> <span class="err">—</span> <span class="err">深搜，查重升级</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>     <span class="err">│</span>   <span class="err">│</span>   <span class="err">└─</span> <span class="n">push_audio_tree</span><span class="p">()</span>  <span class="err">—</span> <span class="err">顶层源加入</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>     <span class="err">│</span>   <span class="err">└─</span> <span class="err">遍历</span> <span class="n">first_audio_source</span> <span class="err">链表</span> <span class="err">—</span> <span class="err">兜底</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>     <span class="err">│</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>     <span class="err">├─</span> <span class="err">渲染每个源（按</span> <span class="n">render_order</span><span class="err">）</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>     <span class="err">│</span>   <span class="err">└─</span> <span class="n">obs_source_audio_render</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>     <span class="err">│</span>       <span class="err">├─</span> <span class="n">scene</span> <span class="err">类</span> <span class="err">→</span> <span class="n">custom_audio_render</span><span class="p">()</span> <span class="err">→</span> <span class="n">scene_audio_render</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>     <span class="err">│</span>       <span class="err">├─</span> <span class="n">submix</span> <span class="err">类</span> <span class="err">→</span> <span class="n">audio_submix</span><span class="p">()</span> <span class="err">→</span> <span class="n">audio_mix</span> <span class="err">回调</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>     <span class="err">│</span>       <span class="err">└─</span> <span class="err">普通源</span>  <span class="err">→</span> <span class="n">process_audio_source_tick</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>     <span class="err">│</span>                     <span class="n">peek</span> <span class="n">input_buf</span> <span class="err">→</span> <span class="n">output_buf</span> <span class="err">→</span> <span class="n">apply_volume</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>     <span class="err">│</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>     <span class="err">├─</span> <span class="err">混音（按</span> <span class="n">root_nodes</span><span class="err">）</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>     <span class="err">│</span>   <span class="err">└─</span> <span class="n">mix_audio</span><span class="p">():</span> <span class="n">mixes</span><span class="p">[</span><span class="n">mix</span><span class="p">]</span><span class="o">.</span><span class="n">data</span><span class="p">[</span><span class="n">ch</span><span class="p">][</span><span class="n">i</span><span class="p">]</span> <span class="o">+=</span> <span class="n">source</span><span class="o">.</span><span class="n">output_buf</span><span class="p">[</span><span class="n">mix</span><span class="p">][</span><span class="n">ch</span><span class="p">][</span><span class="n">i</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>     <span class="err">│</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>     <span class="err">└─</span> <span class="n">discard_audio</span><span class="p">():</span> <span class="n">deque_pop_front</span><span class="p">(</span><span class="n">audio_input_buf</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">├─</span> <span class="err">阶段</span> <span class="n">B</span> <span class="err">·</span> <span class="err">缓冲管理</span> <span class="err">───────────────────────────────────</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>   <span class="n">calc_min_ts</span><span class="p">()</span> <span class="err">→</span> <span class="n">fixed</span><span class="o">/</span><span class="n">dynamic</span> <span class="n">buffering</span> <span class="err">→</span> <span class="n">ignore_audio</span><span class="p">()</span> <span class="err">兜底</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">├─</span> <span class="err">阶段</span> <span class="n">C</span> <span class="err">·</span> <span class="err">钳制</span> <span class="err">─────────────────────────────────────</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>   <span class="n">clamp_audio_output</span><span class="p">()</span> <span class="err">—</span> <span class="err">钳到</span> <span class="p">[</span><span class="o">-</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">]</span><span class="err">，保留</span> <span class="n">unclamped</span> <span class="err">副本</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">│</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>     <span class="err">└─</span> <span class="err">阶段</span> <span class="n">D</span> <span class="err">·</span> <span class="err">分发</span> <span class="err">─────────────────────────────────────</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>         <span class="n">do_audio_output</span><span class="p">()</span> <span class="err">—</span> <span class="err">广播给所有消费者</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>           <span class="err">├─</span> <span class="n">receive_audio</span><span class="p">()</span>           <span class="err">—</span> <span class="err">编码路径</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>           <span class="err">├─</span> <span class="n">default_raw_audio_callback</span><span class="p">()</span> <span class="err">—</span> <span class="err">原始</span> <span class="n">PCM</span> <span class="err">路径</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>           <span class="err">└─</span> <span class="n">obs_add_raw_audio_callback</span><span class="p">()</span> <span class="err">—</span> <span class="err">第三方插件</span>
+</span></span><span class="line"><span class="cl">  <span class="err">│</span>
+</span></span><span class="line"><span class="cl">  <span class="err">└─</span> <span class="n">os_sleepto_ns_fast</span><span class="p">(</span><span class="n">audio_time</span><span class="p">)</span>  <span class="err">←</span> <span class="err">精确睡眠到下一帧</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="err">音频数据输入路径（异步，由各采集源线程调用）</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="n">obs_source_output_audio</span><span class="p">()</span>  <span class="p">[</span><span class="n">obs</span><span class="o">-</span><span class="n">source</span><span class="o">.</span><span class="n">c</span><span class="p">:</span><span class="mi">4029</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">    <span class="err">├─</span> <span class="n">process_audio</span><span class="p">()</span>           <span class="err">—</span> <span class="err">重采样</span> <span class="o">/</span> <span class="err">平衡</span> <span class="o">/</span> <span class="err">强制单声道</span>
+</span></span><span class="line"><span class="cl">    <span class="err">├─</span> <span class="n">filter_async_audio</span><span class="p">()</span>      <span class="err">—</span> <span class="n">filter</span> <span class="err">链</span>
+</span></span><span class="line"><span class="cl">    <span class="err">└─</span> <span class="n">source_output_audio_data</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">          <span class="err">├─</span> <span class="n">deque_push_back</span><span class="p">(</span><span class="n">audio_input_buf</span><span class="p">)</span>  <span class="err">—</span> <span class="err">排队等待音频线程消费</span>
+</span></span><span class="line"><span class="cl">          <span class="err">└─</span> <span class="n">source_signal_audio_data</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">                <span class="err">├─</span> <span class="n">on_audio_playback</span><span class="p">()</span>          <span class="err">—</span> <span class="err">音频监听输出</span>
+</span></span><span class="line"><span class="cl">                <span class="err">└─</span> <span class="n">volmeter_source_data_received</span><span class="p">()</span> <span class="err">—</span> <span class="n">VU</span> <span class="err">表</span>
 </span></span></code></pre></td></tr></table>
 </div>
-</div><hr>
+</div><p>上面是音频线程侧（消费端），下面是采集源侧（生产端）。生产者只管往 deque 里塞数据，消费者按 1024 帧的节奏取出、渲染、混音、分发。两端通过 <code>audio_input_buf</code> 解耦。生产者和消费者跑在不同线程上，这也是为什么需要缓冲管理（阶段 B）——两端的时间戳不可能天然对齐。</p>
+<hr>
 <h2 id="九一些容易踩的命名坑">九、一些容易踩的命名坑
 </h2><ul>
 <li><strong><code>obs_core_data</code></strong> 不是&quot;音频数据&quot;——它是全局对象注册中心，all sources/outputs/encoders/displays 的链表头都在里面。<code>audio_callback</code> 只用了 <code>first_audio_source</code> 和 <code>audio_sources_mutex</code></li>
@@ -2359,6 +2442,17 @@
     <h2 class="section-title">相关文章</h2>
     <div class="subsection-list">
         <div class="article-list--tile">
+            
+                
+<article class="">
+    <a href="/p/obs-studio-%E6%BA%90%E7%A0%81%E5%AD%A6%E4%B9%A0%E5%9B%9Bsource-%E7%B1%BB%E8%AF%A6%E8%A7%A3/">
+        
+
+        <div class="article-details">
+            <h2 class="article-title">OBS Studio 源码学习（四）：source 类详解</h2>
+        </div>
+    </a>
+</article>
             
                 
 <article class="">
